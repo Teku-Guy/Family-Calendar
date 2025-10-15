@@ -1,0 +1,665 @@
+/**
+ * WeekGrid.tsx - Responsive Week/Day Calendar View
+ *
+ * This component renders a Google Calendar-style week or day view with intelligent
+ * event overlap handling. It uses a segment-based algorithm to position overlapping
+ * events side-by-side in columns.
+ *
+ * ## Key Features:
+ * - **Responsive**: 1 day (mobile), 2 days (sm), 4 days (md), 7 days (lg+)
+ * - **Segment-based overlap**: Events are divided into vertical segments at boundary
+ *   points, ensuring consistent column assignment
+ * - **Interactive**: Click/tap events for popover details, keyboard navigation
+ * - **Real-time marker**: Shows current time as a red line
+ * - **Accessibility**: ARIA labels, keyboard support, focus management
+ *
+ * ## Coordinate System:
+ * - **Vertical**: Minutes mapped to pixels (MINUTE_PX = 1, so 60px per hour)
+ * - **Horizontal**: Events in the same time slot are divided into columns with
+ *   COL_GUTTER_PX spacing between them
+ *
+ * ## Overlap Algorithm (Simplified):
+ * 1. **Filter & Clamp**: Only show events that overlap the visible day window
+ * 2. **Group by Collision**: Events that overlap are grouped together
+ * 3. **Assign Columns**: Within each group, assign the lowest available column
+ * 4. **Create Segments**: Split events at all boundary points in the group
+ * 5. **Merge Adjacent**: Recombine adjacent segments with identical positioning
+ *
+ * This ensures that:
+ * - Events never overlap visually
+ * - Column widths adjust based on number of concurrent events
+ * - Layout is deterministic and predictable
+ *
+ * @example
+ * ```tsx
+ * <WeekGrid
+ *   mode="week"
+ *   weekStart={startOfWeek(new Date())}
+ *   events={events}
+ *   dayStartHour={6}
+ *   dayEndHour={22}
+ * />
+ * ```
+ */
+'use client';
+
+import React, { useMemo, useState, useCallback } from 'react';
+import EventCard from '@/components/ui/EventCard';
+import EventPopover from '@/components/ui/EventPopover';
+import { startOfWeek, startOfDay, addDays } from '@/lib/time';
+
+type CalendarEvent = {
+  id: string | number;
+  title: string;
+  start: string; // ISO
+  end: string;   // ISO
+  where?: string;
+  color?: string;
+};
+
+type Props = {
+  mode?: 'day' | 'week';
+  weekStart?: Date;
+  selectedDate?: Date;        // used when mode === 'day'
+  events: CalendarEvent[];
+  dayStartHour?: number;      // default 6
+  dayEndHour?: number;        // default 22
+};
+
+const MINUTE_PX = 1;          // 60px per hour (tweak for density)
+const COL_GUTTER_PX = 4;      // space between overlapping columns
+// const MIN_COL_WIDTH_PX = 100; // minimum column width before showing "+X more" (reserved for future use)
+
+export default function WeekGrid({
+  mode = 'week',
+  weekStart,
+  selectedDate,
+  events,
+  dayStartHour = 6,
+  dayEndHour = 22,
+}: Props) {
+  // Popover state for event details
+  const [popover, setPopover] = useState<{
+    anchor: DOMRect;
+    event: CalendarEvent & { start: string; end: string };
+  } | null>(null);
+
+  // Which days are we rendering?
+  const base = mode === 'day'
+    ? startOfDay(selectedDate ?? new Date())
+    : startOfWeek(weekStart ?? new Date(), 0);
+
+  const days = useMemo(
+    () => (mode === 'day' ? [base] : Array.from({ length: 7 }, (_, i) => addDays(base, i))),
+    [mode, base]
+  );
+
+  const dayHeight = (dayEndHour - dayStartHour) * 60 * MINUTE_PX;
+
+  // Event handlers
+  const handleEventClick = useCallback((e: React.MouseEvent, event: CalendarEvent & { start: string; end: string }) => {
+    e.stopPropagation();
+    setPopover({
+      anchor: e.currentTarget.getBoundingClientRect(),
+      event,
+    });
+  }, []);
+
+  const handleEventKeyDown = useCallback((e: React.KeyboardEvent, event: CalendarEvent & { start: string; end: string }) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      setPopover({
+        anchor: e.currentTarget.getBoundingClientRect(),
+        event,
+      });
+    }
+  }, []);
+
+  const closePopover = useCallback(() => {
+    setPopover(null);
+  }, []);
+
+
+  // ---- Segment-based overlap layout (Google Calendar–style) ---------------
+  // Split each day into vertical segments at event boundaries, then assign
+  // consistent column positions to all overlapping events within each group.
+  // Memoized for performance
+  const layoutDay = useCallback((day: Date) => {
+    const dayStart = new Date(day);
+    dayStart.setHours(dayStartHour, 0, 0, 0);
+    const dayEnd = new Date(day);
+    dayEnd.setHours(dayEndHour, 0, 0, 0);
+
+    // Filter and clamp events to the visible day window
+    const dayEvents = events
+      .map((ev) => {
+        const s = new Date(ev.start);
+        const e = new Date(ev.end);
+
+        // Overlap test: starts before dayEnd AND ends after dayStart
+        const overlapsDay = s.getTime() < dayEnd.getTime() && e.getTime() > dayStart.getTime();
+        if (!overlapsDay) return null;
+
+        // Clamp to visible window
+        const startMs = Math.max(s.getTime(), dayStart.getTime());
+        const endMs = Math.min(e.getTime(), dayEnd.getTime());
+        if (endMs <= startMs) return null;
+
+        return {
+          ...ev,
+          _s: startMs,
+          _e: endMs,
+        };
+      })
+      .filter(Boolean) as Array<CalendarEvent & { _s: number; _e: number }>;
+
+    if (dayEvents.length === 0) return [];
+
+    // Sort by start time, then by end time (longer events first for better column assignment)
+    dayEvents.sort((a, b) => a._s - b._s || b._e - a._e);
+
+    // Step 1: Assign each event to a collision group using sweep line
+    type EventWithGroup = (typeof dayEvents)[number] & { groupId: number; col: number };
+    const eventsWithGroups: EventWithGroup[] = [];
+    let groupId = 0;
+    let activeGroup: EventWithGroup[] = [];
+
+    for (const ev of dayEvents) {
+      // Remove events that no longer overlap
+      activeGroup = activeGroup.filter((a) => a._e > ev._s);
+
+      // Start a new group if no active events
+      if (activeGroup.length === 0) groupId++;
+
+      // Find the lowest available column
+      const takenCols = new Set(activeGroup.map((a) => a.col));
+      let col = 0;
+      while (takenCols.has(col)) col++;
+
+      const eventWithGroup: EventWithGroup = { ...ev, groupId, col };
+      activeGroup.push(eventWithGroup);
+      eventsWithGroups.push(eventWithGroup);
+    }
+
+    // Step 2: Group events by collision group
+    const groups = new Map<number, EventWithGroup[]>();
+    eventsWithGroups.forEach((e) => {
+      const arr = groups.get(e.groupId) || [];
+      arr.push(e);
+      groups.set(e.groupId, arr);
+    });
+
+    // Step 3: For each group, create segments at all unique boundaries
+    type Segment = {
+      id: string | number;
+      title: string;
+      where?: string;
+      color?: string;
+      _s: number;
+      _e: number;
+      col: number;
+      styleLeft: string;
+      styleWidth: string;
+      top: number;
+      height: number;
+      _segId: string;
+      z: number;
+    };
+
+    const allSegments: Segment[] = [];
+
+    groups.forEach((groupEvents) => {
+      // Collect all unique time boundaries in this group
+      const boundaries = new Set<number>();
+      groupEvents.forEach((e) => {
+        boundaries.add(e._s);
+        boundaries.add(e._e);
+      });
+      const sortedBounds = Array.from(boundaries).sort((a, b) => a - b);
+
+      // Process each vertical segment
+      for (let i = 0; i < sortedBounds.length - 1; i++) {
+        const segStart = sortedBounds[i];
+        const segEnd = sortedBounds[i + 1];
+        if (segEnd <= segStart) continue;
+
+        // Find all events active in this segment
+        const activeInSegment = groupEvents
+          .filter((e) => e._s < segEnd && e._e > segStart)
+          .sort((a, b) => a.col - b.col); // Sort by assigned column
+
+        const numCols = Math.max(...activeInSegment.map((e) => e.col)) + 1;
+        const totalGutter = (numCols - 1) * COL_GUTTER_PX;
+        const widthCalc = `calc((100% - ${totalGutter}px) / ${numCols})`;
+
+        // Create a segment for each active event
+        activeInSegment.forEach((e) => {
+          const leftCalc = e.col === 0 ? '0px' : `calc((${widthCalc} + ${COL_GUTTER_PX}px) * ${e.col})`;
+          const top = ((segStart - dayStart.getTime()) / 60000) * MINUTE_PX;
+          const height = ((segEnd - segStart) / 60000) * MINUTE_PX;
+
+          allSegments.push({
+            id: e.id,
+            title: e.title,
+            where: e.where,
+            color: e.color,
+            _s: segStart,
+            _e: segEnd,
+            col: e.col,
+            styleLeft: leftCalc,
+            styleWidth: widthCalc,
+            top,
+            height,
+            _segId: `${e.id}-${segStart}`,
+            z: 10 + e.col,
+          });
+        });
+      }
+    });
+
+    // Step 4: Merge adjacent segments with identical positioning
+    const merged: Segment[] = [];
+    const byEvent = new Map<string | number, Segment[]>();
+
+    allSegments.forEach((seg) => {
+      const arr = byEvent.get(seg.id) || [];
+      arr.push(seg);
+      byEvent.set(seg.id, arr);
+    });
+
+    byEvent.forEach((segs) => {
+      segs.sort((a, b) => a._s - b._s);
+
+      let current = segs[0];
+      for (let i = 1; i < segs.length; i++) {
+        const next = segs[i];
+        // Merge if adjacent and same positioning
+        if (
+          next._s === current._e &&
+          next.styleLeft === current.styleLeft &&
+          next.styleWidth === current.styleWidth
+        ) {
+          current = {
+            ...current,
+            _e: next._e,
+            height: current.height + next.height,
+          };
+        } else {
+          merged.push(current);
+          current = next;
+        }
+      }
+      merged.push(current);
+    });
+
+    return merged;
+  }, [events, dayStartHour, dayEndHour]);
+
+  // Now marker
+  const nowMarker = (() => {
+    const now = new Date();
+    const first = new Date(days[0]); first.setHours(0,0,0,0);
+    const last  = new Date(days[days.length - 1]); last.setHours(23,59,59,999);
+    if (now < first || now > last) return null;
+
+    const minute = now.getHours() * 60 + now.getMinutes();
+    return {
+      dayIndex: mode === 'day' ? 0 : now.getDay(),
+      minute,
+    };
+  })();
+
+  // ---------- Mobile: stacked days ----------
+  const StackedDays = (
+    <div className="space-y-5">
+      {days.map((d, i) => {
+        const isToday = new Date().toDateString() === d.toDateString();
+        const items = layoutDay(d);
+        return (
+          <section key={i} className="overflow-hidden rounded-xl border border-white/10 bg-white/5">
+            <header className="sticky top-0 z-20 flex items-center justify-between gap-2 border-b border-white/10 bg-white/5 backdrop-blur-sm px-3 py-2">
+              <div className={`text-[clamp(0.95rem,2.5vw,1.05rem)] ${isToday ? 'font-semibold' : 'opacity-85'}`}>
+                {d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}
+              </div>
+              {isToday && (
+                <span className="rounded bg-sky-400/15 px-2 py-0.5 text-xs text-sky-300">Today</span>
+              )}
+            </header>
+
+            <div className="relative" style={{ height: dayHeight }}>
+              {/* hour grid with visual hierarchy */}
+              <div className="absolute inset-0">
+                {Array.from({ length: (dayEndHour - dayStartHour) + 1 }).map((_, idx) => {
+                  const h = dayStartHour + idx;
+                  const isThirdHour = idx % 3 === 0;
+              return (
+                <div key={idx} className="relative" style={{ height: 60 * MINUTE_PX }}>
+                  <div className={`absolute inset-x-0 top-0 h-px ${isThirdHour ? 'bg-white/20' : 'bg-white/10'}`} />
+                  {h % 2 === 0 && (
+                    <div className="absolute left-2 top-0 -translate-y-1/2 text-[11px] opacity-60">
+                      {((h + 11) % 12) + 1}{h >= 12 ? 'p' : 'a'}
+                    </div>
+                  )}
+                </div>
+              );
+                })}
+              </div>
+
+              {/* today tint */}
+              {isToday && <div className="pointer-events-none absolute inset-0 bg-sky-400/5" />}
+
+              {/* events with interactions */}
+              <div className="relative h-full w-full">
+                {items.map((ev) => (
+                  <div
+                    key={ev._segId ?? ev.id}
+                    className="absolute px-1"
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`${ev.title}, ${ev.where || ''}`}
+                    style={{ top: ev.top, height: ev.height, left: ev.styleLeft, width: ev.styleWidth, zIndex: ev.z ?? 1 }}
+                    onClick={(e) => handleEventClick(e, { ...ev, start: events.find(e => e.id === ev.id)?.start || '', end: events.find(e => e.id === ev.id)?.end || '' })}
+                    onKeyDown={(e) => handleEventKeyDown(e, { ...ev, start: events.find(e => e.id === ev.id)?.start || '', end: events.find(e => e.id === ev.id)?.end || '' })}
+                  >
+                    <EventCard title={ev.title} where={ev.where} color={ev.color} height={ev.height} />
+                  </div>
+                ))}
+              </div>
+
+              {/* now line */}
+              {nowMarker &&
+                ((mode === 'day' && i === 0) || (mode === 'week' && nowMarker.dayIndex === i)) &&
+                nowMarker.minute >= dayStartHour * 60 &&
+                nowMarker.minute <= dayEndHour * 60 && (
+                  <div
+                    className="pointer-events-none absolute inset-x-0"
+                    style={{ top: (nowMarker.minute - dayStartHour * 60) * MINUTE_PX }}
+                  >
+                    <div className="absolute left-2 top-1/2 -translate-y-1/2 h-2.5 w-2.5 rounded-full border border-zinc-900 bg-rose-400" />
+                    <div className="h-px w-full bg-rose-400/80" />
+                  </div>
+                )}
+            </div>
+          </section>
+        );
+      })}
+    </div>
+  );
+
+  // ---------- Desktop: full week grid ----------
+  const DesktopWeek = (
+    <div className="overflow-hidden rounded-2xl border border-white/10 bg-white/5">
+      {/* headers - responsive grid: 2 days on md, 4 on lg, 7 on xl */}
+      <div className="grid grid-cols-[minmax(60px,90px)_repeat(2,1fr)] md:grid-cols-[minmax(70px,100px)_repeat(4,1fr)] lg:grid-cols-[minmax(70px,110px)_repeat(7,1fr)] border-b border-white/10">
+        <div className="sticky left-0 z-20 bg-white/5 px-2 md:px-3 py-2 text-[clamp(0.7rem,1vw,0.8rem)] opacity-70">Time</div>
+        {days.slice(0, 2).map((d, i) => {
+          const isToday = new Date().toDateString() === d.toDateString();
+          const label = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+          return (
+            <div
+              key={i}
+              className={`px-2 md:px-3 py-2 text-[clamp(0.7rem,1vw,0.85rem)] ${isToday ? 'font-semibold' : 'opacity-80'} lg:hidden`}
+              aria-current={isToday ? 'date' : undefined}
+            >
+              {label}
+            </div>
+          );
+        })}
+        {days.slice(0, 4).map((d, i) => {
+          const isToday = new Date().toDateString() === d.toDateString();
+          const label = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+          return (
+            <div
+              key={i}
+              className={`hidden md:block lg:hidden px-2 md:px-3 py-2 text-[clamp(0.7rem,1vw,0.85rem)] ${isToday ? 'font-semibold' : 'opacity-80'}`}
+              aria-current={isToday ? 'date' : undefined}
+            >
+              {label}
+            </div>
+          );
+        })}
+        {days.map((d, i) => {
+          const isToday = new Date().toDateString() === d.toDateString();
+          const label = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+          return (
+            <div
+              key={i}
+              className={`hidden lg:block px-3 py-2 text-[clamp(0.7rem,1vw,0.85rem)] ${isToday ? 'font-semibold' : 'opacity-80'}`}
+              aria-current={isToday ? 'date' : undefined}
+            >
+              {label}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="relative grid grid-cols-[minmax(60px,90px)_repeat(2,1fr)] md:grid-cols-[minmax(70px,100px)_repeat(4,1fr)] lg:grid-cols-[minmax(70px,110px)_repeat(7,1fr)]">
+        {/* time rail - sticky */}
+        <div className="sticky left-0 z-10 bg-white/5">
+          <div className="relative" style={{ height: dayHeight }}>
+            {Array.from({ length: (dayEndHour - dayStartHour) + 1 }).map((_, idx) => {
+              const h = dayStartHour + idx;
+              const isThirdHour = idx % 3 === 0;
+              return (
+                <div key={idx} className="relative" style={{ height: 60 * MINUTE_PX }}>
+                  <div className="pl-2 md:pl-3 text-[10px] md:text-[11px] opacity-60">
+                    {((h + 11) % 12) + 1} {h >= 12 ? 'PM' : 'AM'}
+                  </div>
+                  <div className={`absolute inset-x-0 top-0 h-px ${isThirdHour ? 'bg-white/20' : 'bg-white/10'}`} />
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* day columns - show 2 on base, 4 on md, 7 on lg */}
+        {days.slice(0, 2).map((d, i) => {
+          const isToday = new Date().toDateString() === d.toDateString();
+          const items = layoutDay(d);
+          return (
+            <div key={i} className="relative border-l border-white/10 lg:hidden">
+              {/* hour lines (top-aligned for perfect event alignment) */}
+              <div className="pointer-events-none absolute inset-0" style={{ height: dayHeight }}>
+                {Array.from({ length: (dayEndHour - dayStartHour) + 1 }).map((_, idx) => {
+                  const isThirdHour = idx % 3 === 0;
+                  return (
+                    <div
+                      key={idx}
+                      className="absolute left-0 right-0"
+                      style={{ top: idx * 60 * MINUTE_PX }}
+                    >
+                      <div className={`h-px ${isThirdHour ? 'bg-white/20' : 'bg-white/10'}`} />
+                    </div>
+                  );
+                })}
+              </div>
+
+              {isToday && <div className="absolute inset-0 bg-sky-400/5" aria-hidden />}
+
+              {/* events */}
+              <div className="relative" style={{ height: dayHeight }}>
+                {items.map((ev) => (
+                  <div
+                    key={ev._segId ?? ev.id}
+                    className="absolute px-0.5 md:px-1"
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`${ev.title}, ${ev.where || ''}`}
+                    style={{ top: ev.top, height: ev.height, left: ev.styleLeft, width: ev.styleWidth, zIndex: ev.z ?? 1 }}
+                    onClick={(e) => handleEventClick(e, { ...ev, start: events.find(e => e.id === ev.id)?.start || '', end: events.find(e => e.id === ev.id)?.end || '' })}
+                    onKeyDown={(e) => handleEventKeyDown(e, { ...ev, start: events.find(e => e.id === ev.id)?.start || '', end: events.find(e => e.id === ev.id)?.end || '' })}
+                  >
+                    <EventCard title={ev.title} where={ev.where} color={ev.color} height={ev.height} />
+                  </div>
+                ))}
+              </div>
+
+              {/* now line */}
+              {nowMarker &&
+                nowMarker.dayIndex === i &&
+                nowMarker.minute >= dayStartHour * 60 &&
+                nowMarker.minute <= dayEndHour * 60 && (
+                  <div
+                    className="pointer-events-none absolute inset-x-0 z-10"
+                    style={{ top: (nowMarker.minute - dayStartHour * 60) * MINUTE_PX }}
+                  >
+                    <div className="absolute left-2 top-1/2 -translate-y-1/2 h-2.5 w-2.5 rounded-full border border-zinc-900 bg-rose-400" />
+                    <div className="h-px w-full bg-rose-400/80" />
+                  </div>
+                )}
+            </div>
+          );
+        })}
+        {days.slice(0, 4).map((d, i) => {
+          const isToday = new Date().toDateString() === d.toDateString();
+          const items = layoutDay(d);
+          return (
+            <div key={i} className="relative border-l border-white/10 hidden md:block lg:hidden">
+              {/* hour lines (top-aligned for perfect event alignment) */}
+              <div className="pointer-events-none absolute inset-0" style={{ height: dayHeight }}>
+                {Array.from({ length: (dayEndHour - dayStartHour) + 1 }).map((_, idx) => {
+                  const isThirdHour = idx % 3 === 0;
+                  return (
+                    <div
+                      key={idx}
+                      className="absolute left-0 right-0"
+                      style={{ top: idx * 60 * MINUTE_PX }}
+                    >
+                      <div className={`h-px ${isThirdHour ? 'bg-white/20' : 'bg-white/10'}`} />
+                    </div>
+                  );
+                })}
+              </div>
+
+              {isToday && <div className="absolute inset-0 bg-sky-400/5" aria-hidden />}
+
+              {/* events */}
+              <div className="relative" style={{ height: dayHeight }}>
+                {items.map((ev) => (
+                  <div
+                    key={ev._segId ?? ev.id}
+                    className="absolute px-0.5 md:px-1"
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`${ev.title}, ${ev.where || ''}`}
+                    style={{ top: ev.top, height: ev.height, left: ev.styleLeft, width: ev.styleWidth, zIndex: ev.z ?? 1 }}
+                    onClick={(e) => handleEventClick(e, { ...ev, start: events.find(e => e.id === ev.id)?.start || '', end: events.find(e => e.id === ev.id)?.end || '' })}
+                    onKeyDown={(e) => handleEventKeyDown(e, { ...ev, start: events.find(e => e.id === ev.id)?.start || '', end: events.find(e => e.id === ev.id)?.end || '' })}
+                  >
+                    <EventCard title={ev.title} where={ev.where} color={ev.color} height={ev.height} />
+                  </div>
+                ))}
+              </div>
+
+              {/* now line */}
+              {nowMarker &&
+                nowMarker.dayIndex === i &&
+                nowMarker.minute >= dayStartHour * 60 &&
+                nowMarker.minute <= dayEndHour * 60 && (
+                  <div
+                    className="pointer-events-none absolute inset-x-0 z-10"
+                    style={{ top: (nowMarker.minute - dayStartHour * 60) * MINUTE_PX }}
+                  >
+                    <div className="absolute left-2 top-1/2 -translate-y-1/2 h-2.5 w-2.5 rounded-full border border-zinc-900 bg-rose-400" />
+                    <div className="h-px w-full bg-rose-400/80" />
+                  </div>
+                )}
+            </div>
+          );
+        })}
+        {days.map((d, i) => {
+          const isToday = new Date().toDateString() === d.toDateString();
+          const items = layoutDay(d);
+          return (
+            <div key={i} className="relative border-l border-white/10 hidden lg:block">
+              {/* hour lines (top-aligned for perfect event alignment) */}
+              <div className="pointer-events-none absolute inset-0" style={{ height: dayHeight }}>
+                {Array.from({ length: (dayEndHour - dayStartHour) + 1 }).map((_, idx) => {
+                  const isThirdHour = idx % 3 === 0;
+                  return (
+                    <div
+                      key={idx}
+                      className="absolute left-0 right-0"
+                      style={{ top: idx * 60 * MINUTE_PX }}
+                    >
+                      <div className={`h-px ${isThirdHour ? 'bg-white/20' : 'bg-white/10'}`} />
+                    </div>
+                  );
+                })}
+              </div>
+
+              {isToday && <div className="absolute inset-0 bg-sky-400/5" aria-hidden />}
+
+              {/* events */}
+              <div className="relative" style={{ height: dayHeight }}>
+                {items.map((ev) => (
+                  <div
+                    key={ev._segId ?? ev.id}
+                    className="absolute px-1"
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`${ev.title}, ${ev.where || ''}`}
+                    style={{ top: ev.top, height: ev.height, left: ev.styleLeft, width: ev.styleWidth, zIndex: ev.z ?? 1 }}
+                    onClick={(e) => handleEventClick(e, { ...ev, start: events.find(e => e.id === ev.id)?.start || '', end: events.find(e => e.id === ev.id)?.end || '' })}
+                    onKeyDown={(e) => handleEventKeyDown(e, { ...ev, start: events.find(e => e.id === ev.id)?.start || '', end: events.find(e => e.id === ev.id)?.end || '' })}
+                  >
+                    <EventCard title={ev.title} where={ev.where} color={ev.color} height={ev.height} />
+                  </div>
+                ))}
+              </div>
+
+              {/* now line */}
+              {nowMarker &&
+                nowMarker.dayIndex === i &&
+                nowMarker.minute >= dayStartHour * 60 &&
+                nowMarker.minute <= dayEndHour * 60 && (
+                  <div
+                    className="pointer-events-none absolute inset-x-0 z-10"
+                    style={{ top: (nowMarker.minute - dayStartHour * 60) * MINUTE_PX }}
+                  >
+                    <div className="absolute left-2 top-1/2 -translate-y-1/2 h-2.5 w-2.5 rounded-full border border-zinc-900 bg-rose-400" />
+                    <div className="h-px w-full bg-rose-400/80" />
+                  </div>
+                )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+  // outer container — fluid height + responsive switch + horizontal scroll support
+  return (
+    <>
+      <div className="relative h-[calc(100vh-9rem)] overflow-auto">
+        {mode === 'day' ? (
+          <div>{StackedDays}</div>
+        ) : (
+          <>
+            <div className="block md:hidden">{StackedDays}</div>
+            <div className="hidden md:block">{DesktopWeek}</div>
+          </>
+        )}
+      </div>
+
+      {/* Event popover */}
+      {popover && (
+        <EventPopover
+          anchor={popover.anchor}
+          event={popover.event}
+          onClose={closePopover}
+          onEdit={() => {
+            closePopover();
+            alert('Edit functionality coming soon');
+          }}
+          onDelete={() => {
+            closePopover();
+            if (confirm(`Delete "${popover.event.title}"?`)) {
+              alert('Delete functionality coming soon');
+            }
+          }}
+        />
+      )}
+    </>
+  );
+}
