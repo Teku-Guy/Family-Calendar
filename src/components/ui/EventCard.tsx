@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { fmtTime } from '@/lib/when';
 
 type Props = {
   title?: string;
@@ -10,6 +11,8 @@ type Props = {
   className?: string;
   height?: number; // height in pixels for smart truncation
   isCondensed?: boolean; // whether to hide location for short events
+  startTime?: string; // ISO 8601 UTC timestamp for displaying event start time
+  endTime?: string; // ISO 8601 UTC timestamp for displaying event end time
 };
 
 // Convert a color to an RGBA string with alpha. Supports #RRGGBB; falls back to CSS color.
@@ -56,6 +59,7 @@ export default function EventCard({
   className = '',
   height,
   isCondensed = false,
+  startTime,
 }: Props) {
   const bg = withAlpha(color, 0.15);
   const textColorClass = getTextColor(color);
@@ -63,6 +67,10 @@ export default function EventCard({
   // Smart condensing based on height
   const shouldCondense = isCondensed || (height !== undefined && height < 40);
   const showLocation = where && !shouldCondense;
+  const showTime = startTime && !shouldCondense;
+
+  // Format time for display
+  const timeDisplay = showTime ? fmtTime(startTime) : null;
 
   return (
     <button
@@ -83,6 +91,11 @@ export default function EventCard({
             <div className="truncate text-[clamp(0.75rem,1.4vw,0.9rem)] font-semibold leading-tight">
               {title}
             </div>
+            {timeDisplay && (
+              <div className="text-[clamp(0.65rem,1vw,0.75rem)] opacity-70 mt-0.5">
+                {timeDisplay}
+              </div>
+            )}
             {showLocation && (
               <div className="truncate text-[clamp(0.65rem,1vw,0.75rem)] opacity-70 mt-0.5 flex items-center gap-1">
                 <svg className="h-2.5 w-2.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">

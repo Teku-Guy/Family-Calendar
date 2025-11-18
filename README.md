@@ -10,7 +10,7 @@ cd family-calendar
 bun i @supabase/supabase-js @supabase/ssr zod date-fns rrule jsonwebtoken googleapis
 
 # Environment variables
-cp .env.example .env.local
+cp .env.local.example .env.local
 # Fill in your Supabase + Google credentials
 
 # Database setup

@@ -4,6 +4,37 @@ import { googleFetch } from '@/lib/google';
 
 const GOOGLE_CALENDAR_API = 'https://www.googleapis.com/calendar/v3';
 
+/**
+ * Convert a datetime string to UTC, respecting the specified timezone
+ *
+ * Google Calendar events can have timezone-specific times. This function
+ * ensures proper UTC conversion for database storage.
+ *
+ * ## How Google Calendar Sends Times:
+ * - If the datetime string includes an offset (e.g., "2025-10-15T14:00:00-04:00"),
+ *   JavaScript Date will parse it correctly to UTC automatically.
+ * - The `timeZone` field in the Google API is mainly informational and for recurring
+ *   events. For one-time events with ISO 8601 strings that include offsets, we can
+ *   rely on Date's built-in parsing.
+ *
+ * @param isoOrDate - ISO datetime string from Google Calendar
+ * @param tz - IANA timezone (optional, used for validation/logging)
+ * @returns UTC ISO string
+ */
+function toUTC(isoOrDate: string, tz?: string): string {
+  // JavaScript Date automatically handles ISO 8601 strings with timezone offsets
+  // Example: "2025-10-15T14:00:00-04:00" correctly becomes UTC
+  const date = new Date(isoOrDate);
+
+  // Validate the parse was successful
+  if (isNaN(date.getTime())) {
+    console.warn(`Invalid date string: ${isoOrDate}, timezone: ${tz}`);
+    return new Date().toISOString(); // Fallback to now
+  }
+
+  return date.toISOString();
+}
+
 interface GoogleCalendarEvent {
   id: string;
   summary?: string;
@@ -94,8 +125,22 @@ export async function POST() {
 
       // Determine if all-day event
       const allDay = !!gEvent.start.date;
-      const startsAt = gEvent.start.dateTime || gEvent.start.date;
-      const endsAt = gEvent.end.dateTime || gEvent.end.date;
+
+      // Convert times to UTC, respecting event timezones
+      const startTZ = gEvent.start?.timeZone;
+      const endTZ = gEvent.end?.timeZone;
+
+      const startsAt = gEvent.start.dateTime
+        ? toUTC(gEvent.start.dateTime, startTZ)
+        : gEvent.start.date
+        ? `${gEvent.start.date}T00:00:00.000Z`
+        : '';
+
+      const endsAt = gEvent.end.dateTime
+        ? toUTC(gEvent.end.dateTime, endTZ)
+        : gEvent.end.date
+        ? `${gEvent.end.date}T00:00:00.000Z`
+        : '';
 
       // Check if this event already exists (by source_id)
       const { data: existing } = await sb

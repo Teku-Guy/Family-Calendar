@@ -57,6 +57,28 @@ type CalendarEvent = {
   color?: string;
 };
 
+/**
+ * Callback when user drags to create a new event
+ */
+export type OnCreateDraft = (draft: {
+  calendar_id: string;
+  starts_at: string;
+  ends_at: string;
+}) => void;
+
+/**
+ * Callback when user clicks an existing event to edit
+ */
+export type OnEditEvent = (id: string, init: {
+  id: string;
+  calendar_id: string;
+  title: string;
+  location?: string;
+  color?: string;
+  starts_at: string;
+  ends_at: string;
+}) => void;
+
 type Props = {
   mode?: 'day' | 'week';
   weekStart?: Date;
@@ -64,6 +86,9 @@ type Props = {
   events: CalendarEvent[];
   dayStartHour?: number;      // default 6
   dayEndHour?: number;        // default 22
+  primaryCalendarId?: string; // For creating new events
+  onCreateDraft?: OnCreateDraft;
+  onEditEvent?: OnEditEvent;
 };
 
 const MINUTE_PX = 1;          // 60px per hour (tweak for density)
@@ -77,6 +102,9 @@ export default function WeekGrid({
   events,
   dayStartHour = 6,
   dayEndHour = 22,
+  primaryCalendarId,
+  onCreateDraft,
+  onEditEvent,
 }: Props) {
   // Popover state for event details
   const [popover, setPopover] = useState<{
@@ -96,29 +124,84 @@ export default function WeekGrid({
 
   const dayHeight = (dayEndHour - dayStartHour) * 60 * MINUTE_PX;
 
-  // Event handlers
-  const handleEventClick = useCallback((e: React.MouseEvent, event: CalendarEvent & { start: string; end: string }) => {
-    e.stopPropagation();
-    setPopover({
-      anchor: e.currentTarget.getBoundingClientRect(),
-      event,
-    });
-  }, []);
-
-  const handleEventKeyDown = useCallback((e: React.KeyboardEvent, event: CalendarEvent & { start: string; end: string }) => {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      setPopover({
-        anchor: e.currentTarget.getBoundingClientRect(),
-        event,
-      });
-    }
-  }, []);
-
+  // Close popover callback
   const closePopover = useCallback(() => {
     setPopover(null);
   }, []);
 
+  /**
+   * Converts a Date to local datetime-local input format (YYYY-MM-DDTHH:mm)
+   */
+  const toLocalInputFormat = useCallback((date: Date): string => {
+    const offset = date.getTimezoneOffset() * 60000;
+    return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+  }, []);
+
+  /**
+   * Handles drag-to-create on a day column
+   * Captures mouse down, tracks movement, and calls onCreateDraft on mouse up
+   */
+  const handleDayMouseDown = useCallback(
+    (day: Date, e: React.MouseEvent<HTMLDivElement>) => {
+      if (!primaryCalendarId || !onCreateDraft) return;
+
+      const rect = e.currentTarget.getBoundingClientRect();
+      const startY = e.clientY - rect.top;
+      const startMinute = Math.max(0, Math.round(startY / MINUTE_PX));
+
+      const handleMouseUp = (upEvent: MouseEvent) => {
+        document.removeEventListener('mouseup', handleMouseUp);
+
+        const endY = upEvent.clientY - rect.top;
+        const endMinute = Math.max(0, Math.round(endY / MINUTE_PX));
+
+        const minStart = Math.min(startMinute, endMinute);
+        const maxEnd = Math.max(startMinute, endMinute);
+
+        // Minimum 30-minute event
+        const finalStart = minStart;
+        const finalEnd = Math.max(minStart + 30, maxEnd);
+
+        // Calculate actual start/end times
+        const start = new Date(day);
+        start.setHours(dayStartHour, 0, 0, 0);
+        start.setMinutes(start.getMinutes() + finalStart);
+
+        const end = new Date(day);
+        end.setHours(dayStartHour, 0, 0, 0);
+        end.setMinutes(end.getMinutes() + finalEnd);
+
+        onCreateDraft({
+          calendar_id: primaryCalendarId,
+          starts_at: toLocalInputFormat(start),
+          ends_at: toLocalInputFormat(end),
+        });
+      };
+
+      document.addEventListener('mouseup', handleMouseUp);
+    },
+    [dayStartHour, primaryCalendarId, onCreateDraft, toLocalInputFormat]
+  );
+
+  /**
+   * Handles click on an event segment to open edit modal
+   */
+  const handleEventEditClick = useCallback(
+    (ev: { id: string | number; title: string; where?: string; color?: string; _s: number; _e: number }) => {
+      if (!onEditEvent || !primaryCalendarId) return;
+
+      onEditEvent(String(ev.id), {
+        id: String(ev.id),
+        calendar_id: primaryCalendarId,
+        title: ev.title,
+        location: ev.where,
+        color: ev.color,
+        starts_at: toLocalInputFormat(new Date(ev._s)),
+        ends_at: toLocalInputFormat(new Date(ev._e)),
+      });
+    },
+    [onEditEvent, primaryCalendarId, toLocalInputFormat]
+  );
 
   // ---- Segment-based overlap layout (Google Calendar–style) ---------------
   // Split each day into vertical segments at event boundaries, then assign
@@ -326,9 +409,18 @@ export default function WeekGrid({
               )}
             </header>
 
-            <div className="relative" style={{ height: dayHeight }}>
+            <div
+              className="relative cursor-crosshair"
+              style={{ height: dayHeight }}
+              onMouseDown={(e) => {
+                // Only trigger drag-to-create if clicking on empty space (not an event)
+                if (e.target === e.currentTarget || (e.target as HTMLElement).closest('.hour-grid')) {
+                  handleDayMouseDown(d, e);
+                }
+              }}
+            >
               {/* hour grid with visual hierarchy */}
-              <div className="absolute inset-0">
+              <div className="absolute inset-0 hour-grid">
                 {Array.from({ length: (dayEndHour - dayStartHour) + 1 }).map((_, idx) => {
                   const h = dayStartHour + idx;
                   const isThirdHour = idx % 3 === 0;
@@ -353,15 +445,30 @@ export default function WeekGrid({
                 {items.map((ev) => (
                   <div
                     key={ev._segId ?? ev.id}
-                    className="absolute px-1"
+                    className="absolute px-1 cursor-pointer"
                     role="button"
                     tabIndex={0}
                     aria-label={`${ev.title}, ${ev.where || ''}`}
                     style={{ top: ev.top, height: ev.height, left: ev.styleLeft, width: ev.styleWidth, zIndex: ev.z ?? 1 }}
-                    onClick={(e) => handleEventClick(e, { ...ev, start: events.find(e => e.id === ev.id)?.start || '', end: events.find(e => e.id === ev.id)?.end || '' })}
-                    onKeyDown={(e) => handleEventKeyDown(e, { ...ev, start: events.find(e => e.id === ev.id)?.start || '', end: events.find(e => e.id === ev.id)?.end || '' })}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleEventEditClick(ev);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        handleEventEditClick(ev);
+                      }
+                    }}
                   >
-                    <EventCard title={ev.title} where={ev.where} color={ev.color} height={ev.height} />
+                    <EventCard
+                      title={ev.title}
+                      where={ev.where}
+                      color={ev.color}
+                      height={ev.height}
+                      startTime={new Date(ev._s).toISOString()}
+                      endTime={new Date(ev._e).toISOString()}
+                    />
                   </div>
                 ))}
               </div>
@@ -457,9 +564,17 @@ export default function WeekGrid({
           const isToday = new Date().toDateString() === d.toDateString();
           const items = layoutDay(d);
           return (
-            <div key={i} className="relative border-l border-white/10 lg:hidden">
+            <div
+              key={i}
+              className="relative border-l border-white/10 lg:hidden cursor-crosshair"
+              onMouseDown={(e) => {
+                if (e.target === e.currentTarget || (e.target as HTMLElement).closest('.hour-grid')) {
+                  handleDayMouseDown(d, e);
+                }
+              }}
+            >
               {/* hour lines (top-aligned for perfect event alignment) */}
-              <div className="pointer-events-none absolute inset-0" style={{ height: dayHeight }}>
+              <div className="pointer-events-none absolute inset-0 hour-grid" style={{ height: dayHeight }}>
                 {Array.from({ length: (dayEndHour - dayStartHour) + 1 }).map((_, idx) => {
                   const isThirdHour = idx % 3 === 0;
                   return (
@@ -481,15 +596,30 @@ export default function WeekGrid({
                 {items.map((ev) => (
                   <div
                     key={ev._segId ?? ev.id}
-                    className="absolute px-0.5 md:px-1"
+                    className="absolute px-0.5 md:px-1 cursor-pointer"
                     role="button"
                     tabIndex={0}
                     aria-label={`${ev.title}, ${ev.where || ''}`}
                     style={{ top: ev.top, height: ev.height, left: ev.styleLeft, width: ev.styleWidth, zIndex: ev.z ?? 1 }}
-                    onClick={(e) => handleEventClick(e, { ...ev, start: events.find(e => e.id === ev.id)?.start || '', end: events.find(e => e.id === ev.id)?.end || '' })}
-                    onKeyDown={(e) => handleEventKeyDown(e, { ...ev, start: events.find(e => e.id === ev.id)?.start || '', end: events.find(e => e.id === ev.id)?.end || '' })}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleEventEditClick(ev);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        handleEventEditClick(ev);
+                      }
+                    }}
                   >
-                    <EventCard title={ev.title} where={ev.where} color={ev.color} height={ev.height} />
+                    <EventCard
+                      title={ev.title}
+                      where={ev.where}
+                      color={ev.color}
+                      height={ev.height}
+                      startTime={new Date(ev._s).toISOString()}
+                      endTime={new Date(ev._e).toISOString()}
+                    />
                   </div>
                 ))}
               </div>
@@ -514,9 +644,17 @@ export default function WeekGrid({
           const isToday = new Date().toDateString() === d.toDateString();
           const items = layoutDay(d);
           return (
-            <div key={i} className="relative border-l border-white/10 hidden md:block lg:hidden">
+            <div
+              key={i}
+              className="relative border-l border-white/10 hidden md:block lg:hidden cursor-crosshair"
+              onMouseDown={(e) => {
+                if (e.target === e.currentTarget || (e.target as HTMLElement).closest('.hour-grid')) {
+                  handleDayMouseDown(d, e);
+                }
+              }}
+            >
               {/* hour lines (top-aligned for perfect event alignment) */}
-              <div className="pointer-events-none absolute inset-0" style={{ height: dayHeight }}>
+              <div className="pointer-events-none absolute inset-0 hour-grid" style={{ height: dayHeight }}>
                 {Array.from({ length: (dayEndHour - dayStartHour) + 1 }).map((_, idx) => {
                   const isThirdHour = idx % 3 === 0;
                   return (
@@ -538,15 +676,30 @@ export default function WeekGrid({
                 {items.map((ev) => (
                   <div
                     key={ev._segId ?? ev.id}
-                    className="absolute px-0.5 md:px-1"
+                    className="absolute px-0.5 md:px-1 cursor-pointer"
                     role="button"
                     tabIndex={0}
                     aria-label={`${ev.title}, ${ev.where || ''}`}
                     style={{ top: ev.top, height: ev.height, left: ev.styleLeft, width: ev.styleWidth, zIndex: ev.z ?? 1 }}
-                    onClick={(e) => handleEventClick(e, { ...ev, start: events.find(e => e.id === ev.id)?.start || '', end: events.find(e => e.id === ev.id)?.end || '' })}
-                    onKeyDown={(e) => handleEventKeyDown(e, { ...ev, start: events.find(e => e.id === ev.id)?.start || '', end: events.find(e => e.id === ev.id)?.end || '' })}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleEventEditClick(ev);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        handleEventEditClick(ev);
+                      }
+                    }}
                   >
-                    <EventCard title={ev.title} where={ev.where} color={ev.color} height={ev.height} />
+                    <EventCard
+                      title={ev.title}
+                      where={ev.where}
+                      color={ev.color}
+                      height={ev.height}
+                      startTime={new Date(ev._s).toISOString()}
+                      endTime={new Date(ev._e).toISOString()}
+                    />
                   </div>
                 ))}
               </div>
@@ -571,9 +724,17 @@ export default function WeekGrid({
           const isToday = new Date().toDateString() === d.toDateString();
           const items = layoutDay(d);
           return (
-            <div key={i} className="relative border-l border-white/10 hidden lg:block">
+            <div
+              key={i}
+              className="relative border-l border-white/10 hidden lg:block cursor-crosshair"
+              onMouseDown={(e) => {
+                if (e.target === e.currentTarget || (e.target as HTMLElement).closest('.hour-grid')) {
+                  handleDayMouseDown(d, e);
+                }
+              }}
+            >
               {/* hour lines (top-aligned for perfect event alignment) */}
-              <div className="pointer-events-none absolute inset-0" style={{ height: dayHeight }}>
+              <div className="pointer-events-none absolute inset-0 hour-grid" style={{ height: dayHeight }}>
                 {Array.from({ length: (dayEndHour - dayStartHour) + 1 }).map((_, idx) => {
                   const isThirdHour = idx % 3 === 0;
                   return (
@@ -595,15 +756,30 @@ export default function WeekGrid({
                 {items.map((ev) => (
                   <div
                     key={ev._segId ?? ev.id}
-                    className="absolute px-1"
+                    className="absolute px-1 cursor-pointer"
                     role="button"
                     tabIndex={0}
                     aria-label={`${ev.title}, ${ev.where || ''}`}
                     style={{ top: ev.top, height: ev.height, left: ev.styleLeft, width: ev.styleWidth, zIndex: ev.z ?? 1 }}
-                    onClick={(e) => handleEventClick(e, { ...ev, start: events.find(e => e.id === ev.id)?.start || '', end: events.find(e => e.id === ev.id)?.end || '' })}
-                    onKeyDown={(e) => handleEventKeyDown(e, { ...ev, start: events.find(e => e.id === ev.id)?.start || '', end: events.find(e => e.id === ev.id)?.end || '' })}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleEventEditClick(ev);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        handleEventEditClick(ev);
+                      }
+                    }}
                   >
-                    <EventCard title={ev.title} where={ev.where} color={ev.color} height={ev.height} />
+                    <EventCard
+                      title={ev.title}
+                      where={ev.where}
+                      color={ev.color}
+                      height={ev.height}
+                      startTime={new Date(ev._s).toISOString()}
+                      endTime={new Date(ev._e).toISOString()}
+                    />
                   </div>
                 ))}
               </div>

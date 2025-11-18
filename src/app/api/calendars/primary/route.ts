@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { getPrimaryCalendarId } from '@/lib/events';
+// Temporarily using simple version until migration is applied
+import { getPrimaryCalendarId } from '@/lib/events-simple';
 
 export async function GET() {
   try {

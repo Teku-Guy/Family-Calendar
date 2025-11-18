@@ -1,10 +1,11 @@
 'use client';
 
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useCallback } from 'react';
 import { supabaseBrowser } from '@/lib/supabase/client';
 import WeekGrid from '@/components/calendar/WeekGrid';
 import MonthGrid from '@/components/calendar/MonthGrid';
 import YearGrid from '@/components/calendar/YearGrid';
+import EventModal, { type EventDraft } from '@/components/calendar/EventModal';
 import { startOfWeek, addDays, addMonths, startOfMonth } from '@/lib/time';
 
 type Mode = 'day' | 'week' | 'month' | 'year';
@@ -19,7 +20,29 @@ export default function CalendarPage() {
   const [googleConnected, setGoogleConnected] = useState(false);
   const [syncing, setSyncing] = useState(false);
 
+  // Modal state
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalMode, setModalMode] = useState<'create' | 'edit'>('create');
+  const [draft, setDraft] = useState<EventDraft | null>(null);
+  const [primaryCalendarId, setPrimaryCalendarId] = useState<string>('');
+
   const weekStart = useMemo(() => startOfWeek(cursor, 0), [cursor]);
+
+  // Fetch primary calendar ID on mount
+  useEffect(() => {
+    const fetchPrimaryCalendar = async () => {
+      try {
+        const res = await fetch('/api/calendars/primary');
+        if (res.ok) {
+          const { calendarId } = await res.json();
+          setPrimaryCalendarId(calendarId);
+        }
+      } catch (error) {
+        console.error('Error fetching primary calendar:', error);
+      }
+    };
+    fetchPrimaryCalendar();
+  }, []);
 
   // Check Google connection status on mount
   useEffect(() => {
@@ -78,7 +101,11 @@ export default function CalendarPage() {
         );
 
         if (!res.ok) {
-          throw new Error('Failed to fetch events');
+          const text = await res.text().catch(() => '');
+          if (process.env.NODE_ENV !== 'production') {
+            console.error('[events fetch] status', res.status, text);
+          }
+          throw new Error(text || `Failed to fetch events (${res.status})`);
         }
 
         const json = await res.json();
@@ -92,8 +119,8 @@ export default function CalendarPage() {
             color: e.color,
           }))
         );
-      } catch (error) {
-        console.error('Error fetching events:', error);
+      } catch (error: any) {
+        console.error('[CalendarPage] fetchEvents failed:', error?.message || error);
         setEvents([]);
       } finally {
         setLoading(false);
@@ -127,7 +154,16 @@ export default function CalendarPage() {
           fetch(`/api/events?from=${from.toISOString()}&to=${to.toISOString()}`, {
             cache: 'no-store',
           })
-            .then((res) => res.json())
+            .then(async (res) => {
+              if (!res.ok) {
+                const text = await res.text().catch(() => '');
+                if (process.env.NODE_ENV !== 'production') {
+                  console.error('[realtime events fetch] status', res.status, text);
+                }
+                throw new Error(text || `Failed to fetch events (${res.status})`);
+              }
+              return res.json();
+            })
             .then((json) => {
               setEvents(
                 (json.events || []).map((e: DBEvent) => ({
@@ -139,6 +175,9 @@ export default function CalendarPage() {
                   color: e.color,
                 }))
               );
+            })
+            .catch((error: any) => {
+              console.error('[CalendarPage] realtime fetchEvents failed:', error?.message || error);
             })
             .finally(() => setLoading(false));
         }
@@ -163,6 +202,24 @@ export default function CalendarPage() {
     if (mode === 'year') setCursor(addMonths(cursor, +12));
   }
   function goToday() { setCursor(new Date()); }
+
+  // Modal callbacks
+  const openCreate = useCallback((initDraft: { calendar_id: string; starts_at: string; ends_at: string }) => {
+    setDraft(initDraft);
+    setModalMode('create');
+    setModalOpen(true);
+  }, []);
+
+  const openEdit = useCallback((_id: string, initDraft: EventDraft) => {
+    setDraft(initDraft);
+    setModalMode('edit');
+    setModalOpen(true);
+  }, []);
+
+  const closeModal = useCallback(() => {
+    setModalOpen(false);
+    setDraft(null);
+  }, []);
 
   async function handleGoogleSync() {
     setSyncing(true);
@@ -283,57 +340,70 @@ export default function CalendarPage() {
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white/60" />
         </div>
       )}
-      {!loading && mode === 'day' && <WeekGrid mode="day" selectedDate={cursor} events={events} />}
-      {!loading && mode === 'week' && <WeekGrid mode="week" weekStart={weekStart} events={events} />}
+      {!loading && mode === 'day' && (
+        <WeekGrid
+          mode="day"
+          selectedDate={cursor}
+          events={events}
+          primaryCalendarId={primaryCalendarId}
+          onCreateDraft={openCreate}
+          onEditEvent={openEdit}
+        />
+      )}
+      {!loading && mode === 'week' && (
+        <WeekGrid
+          mode="week"
+          weekStart={weekStart}
+          events={events}
+          primaryCalendarId={primaryCalendarId}
+          onCreateDraft={openCreate}
+          onEditEvent={openEdit}
+        />
+      )}
       {!loading && mode === 'month' && <MonthGrid cursor={startOfMonth(cursor)} events={events} />}
       {!loading && mode === 'year' && <YearGrid cursor={cursor} events={events} />}
 
       {/* FAB - responsive touch-friendly */}
       <button
         className="fixed bottom-4 right-4 md:bottom-6 md:right-6 rounded-full border border-white/10 bg-white/10 px-4 py-2.5 md:px-5 md:py-3 text-sm font-medium backdrop-blur hover:bg-white/20 active:bg-white/30 touch-manipulation shadow-lg transition-all disabled:opacity-50"
-        onClick={async () => {
-          // Get primary calendar ID and create a test event
-          const now = new Date();
-          const end = new Date(now.getTime() + 60 * 60 * 1000);
-
-          try {
-            // First get the primary calendar ID
-            const calRes = await fetch('/api/calendars/primary');
-            if (!calRes.ok) {
-              alert('Please set up your calendar first. Sign in to create a profile and calendar.');
-              return;
-            }
-            const { calendarId } = await calRes.json();
-
-            const res = await fetch('/api/events', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                calendar_id: calendarId,
-                title: 'Quick Event',
-                location: 'Home',
-                starts_at: now.toISOString(),
-                ends_at: end.toISOString(),
-              }),
-            });
-
-            if (!res.ok) {
-              const error = await res.json();
-              alert(`Failed to create event: ${error.error}`);
-            } else {
-              // Event created successfully, realtime will update the view
-            }
-          } catch (error) {
-            console.error('Error creating event:', error);
-            alert('Failed to create event. Please try again.');
+        onClick={() => {
+          if (!primaryCalendarId) {
+            alert('Please set up your calendar first. Sign in to create a profile and calendar.');
+            return;
           }
+          // Open modal with current time as default
+          const now = new Date();
+          const roundedMinutes = Math.ceil(now.getMinutes() / 30) * 30;
+          now.setMinutes(roundedMinutes, 0, 0);
+
+          const end = new Date(now.getTime() + 60 * 60 * 1000); // 1 hour later
+
+          const offset = now.getTimezoneOffset() * 60000;
+          const starts_at = new Date(now.getTime() - offset).toISOString().slice(0, 16);
+          const ends_at = new Date(end.getTime() - offset).toISOString().slice(0, 16);
+
+          openCreate({
+            calendar_id: primaryCalendarId,
+            starts_at,
+            ends_at,
+          });
         }}
         aria-label="Add event"
-        disabled={loading}
+        disabled={loading || !primaryCalendarId}
       >
         <span className="hidden sm:inline">+ Add event</span>
         <span className="sm:hidden text-xl">+</span>
       </button>
+
+      {/* Event Modal */}
+      {draft && (
+        <EventModal
+          open={modalOpen}
+          onClose={closeModal}
+          defaults={draft}
+          mode={modalMode}
+        />
+      )}
     </main>
   );
 }
