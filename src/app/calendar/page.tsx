@@ -9,8 +9,8 @@ import EventModal, { type EventDraft } from '@/components/calendar/EventModal';
 import { startOfWeek, addDays, addMonths, startOfMonth } from '@/lib/time';
 
 type Mode = 'day' | 'week' | 'month' | 'year';
-type Ev = { id: number|string; title: string; start: string; end: string; where?: string; color?: string };
-type DBEvent = { id: string; title: string; starts_at: string; ends_at: string; location?: string; color?: string };
+type Ev = { id: number|string; title: string; start: string; end: string; where?: string; color?: string; all_day?: boolean };
+type DBEvent = { id: string; title: string; starts_at: string; ends_at: string; location?: string; color?: string; all_day?: boolean };
 
 export default function CalendarPage() {
   const [mode, setMode] = useState<Mode>('week');
@@ -117,10 +117,12 @@ export default function CalendarPage() {
             end: e.ends_at,
             where: e.location,
             color: e.color,
+            all_day: e.all_day,
           }))
         );
-      } catch (error: any) {
-        console.error('[CalendarPage] fetchEvents failed:', error?.message || error);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        console.error('[CalendarPage] fetchEvents failed:', message);
         setEvents([]);
       } finally {
         setLoading(false);
@@ -130,9 +132,47 @@ export default function CalendarPage() {
     fetchEvents();
   }, [mode, cursor, weekStart]);
 
-  // Optional: Realtime subscriptions
+  // Refetch helper - memoized to avoid recreating on every render
+  const refetchEvents = useCallback(async () => {
+    const from = new Date(mode === 'day' ? cursor : weekStart);
+    from.setHours(0, 0, 0, 0);
+    const to = new Date(from);
+    if (mode === 'day') to.setDate(to.getDate() + 1);
+    else if (mode === 'week') to.setDate(to.getDate() + 7);
+    else if (mode === 'month') to.setMonth(to.getMonth() + 1);
+    else to.setFullYear(to.getFullYear() + 1);
+    to.setHours(23, 59, 59, 999);
+
+    try {
+      const res = await fetch(`/api/events?from=${from.toISOString()}&to=${to.toISOString()}`, {
+        cache: 'no-store',
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(text || `Failed to fetch events (${res.status})`);
+      }
+      const json = await res.json();
+      setEvents(
+        (json.events || []).map((e: DBEvent) => ({
+          id: e.id,
+          title: e.title,
+          start: e.starts_at,
+          end: e.ends_at,
+          where: e.location,
+          color: e.color,
+          all_day: e.all_day,
+        }))
+      );
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      console.error('[CalendarPage] fetchEvents failed:', message);
+    }
+  }, [mode, cursor, weekStart]);
+
+  // Realtime subscriptions with debouncing
   useEffect(() => {
     const sb = supabaseBrowser();
+    let debounceTimer: ReturnType<typeof setTimeout>;
 
     const channel = sb
       .channel('events-feed')
@@ -140,54 +180,23 @@ export default function CalendarPage() {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'events' },
         () => {
-          // Refetch events when changes occur
-          setLoading(true);
-          const from = new Date(mode === 'day' ? cursor : weekStart);
-          from.setHours(0, 0, 0, 0);
-          const to = new Date(from);
-          if (mode === 'day') to.setDate(to.getDate() + 1);
-          else if (mode === 'week') to.setDate(to.getDate() + 7);
-          else if (mode === 'month') to.setMonth(to.getMonth() + 1);
-          else to.setFullYear(to.getFullYear() + 1);
-          to.setHours(23, 59, 59, 999);
-
-          fetch(`/api/events?from=${from.toISOString()}&to=${to.toISOString()}`, {
-            cache: 'no-store',
-          })
-            .then(async (res) => {
-              if (!res.ok) {
-                const text = await res.text().catch(() => '');
-                if (process.env.NODE_ENV !== 'production') {
-                  console.error('[realtime events fetch] status', res.status, text);
-                }
-                throw new Error(text || `Failed to fetch events (${res.status})`);
-              }
-              return res.json();
-            })
-            .then((json) => {
-              setEvents(
-                (json.events || []).map((e: DBEvent) => ({
-                  id: e.id,
-                  title: e.title,
-                  start: e.starts_at,
-                  end: e.ends_at,
-                  where: e.location,
-                  color: e.color,
-                }))
-              );
-            })
-            .catch((error: any) => {
-              console.error('[CalendarPage] realtime fetchEvents failed:', error?.message || error);
-            })
-            .finally(() => setLoading(false));
+          // Debounce rapid changes (120ms)
+          clearTimeout(debounceTimer);
+          debounceTimer = setTimeout(() => {
+            console.log('[CalendarPage] Realtime update detected, refetching...');
+            refetchEvents();
+          }, 120);
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.log('[CalendarPage] Realtime subscription status:', status);
+      });
 
     return () => {
+      clearTimeout(debounceTimer);
       sb.removeChannel(channel);
     };
-  }, [mode, cursor, weekStart]);
+  }, [refetchEvents]);
 
   function goPrev() {
     if (mode === 'day')  setCursor(addDays(cursor, -1));
@@ -219,7 +228,10 @@ export default function CalendarPage() {
   const closeModal = useCallback(() => {
     setModalOpen(false);
     setDraft(null);
-  }, []);
+    // Refetch events after modal closes to ensure fresh data
+    // This acts as a fallback if Realtime doesn't trigger immediately
+    setTimeout(() => refetchEvents(), 100);
+  }, [refetchEvents]);
 
   async function handleGoogleSync() {
     setSyncing(true);
@@ -252,6 +264,7 @@ export default function CalendarPage() {
               end: e.ends_at,
               where: e.location,
               color: e.color,
+              all_day: e.all_day,
             }))
           );
         }
@@ -360,8 +373,22 @@ export default function CalendarPage() {
           onEditEvent={openEdit}
         />
       )}
-      {!loading && mode === 'month' && <MonthGrid cursor={startOfMonth(cursor)} events={events} />}
-      {!loading && mode === 'year' && <YearGrid cursor={cursor} events={events} />}
+      {!loading && mode === 'month' && (
+        <MonthGrid
+          cursor={startOfMonth(cursor)}
+          events={events}
+          onEditEvent={openEdit}
+          primaryCalendarId={primaryCalendarId}
+        />
+      )}
+      {!loading && mode === 'year' && (
+        <YearGrid
+          cursor={cursor}
+          events={events}
+          onEditEvent={openEdit}
+          primaryCalendarId={primaryCalendarId}
+        />
+      )}
 
       {/* FAB - responsive touch-friendly */}
       <button
