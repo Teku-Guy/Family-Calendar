@@ -76,7 +76,6 @@ const DayColumn = memo(function DayColumn({
   dayHeight,
   dayStartHour,
   dayEndHour,
-  nowMarker,
   dayIndex,
   mode,
   onMouseDown,
@@ -92,7 +91,6 @@ const DayColumn = memo(function DayColumn({
   dayHeight: number;
   dayStartHour: number;
   dayEndHour: number;
-  nowMarker: { dayIndex: number; minute: number } | null;
   dayIndex: number;
   mode: 'day' | 'week';
   onMouseDown: (e: React.MouseEvent<HTMLDivElement>) => void;
@@ -182,20 +180,6 @@ const DayColumn = memo(function DayColumn({
           </div>
         ))}
       </div>
-
-      {/* now line */}
-      {nowMarker &&
-        ((mode === 'day' && dayIndex === 0) || (mode === 'week' && nowMarker.dayIndex === dayIndex)) &&
-        nowMarker.minute >= dayStartHour * 60 &&
-        nowMarker.minute <= dayEndHour * 60 && (
-          <div
-            className="pointer-events-none absolute inset-x-0 z-10"
-            style={{ top: (nowMarker.minute - dayStartHour * 60) * MINUTE_PX }}
-          >
-            <div className="absolute left-2 top-1/2 -translate-y-1/2 h-2.5 w-2.5 rounded-full border border-zinc-900 bg-rose-400" />
-            <div className="h-px w-full bg-rose-400/80" />
-          </div>
-        )}
     </div>
   );
 });
@@ -648,19 +632,6 @@ export default function WeekGrid({
     return days.map(day => layoutDayFn(day));
   }, [days, layoutDayFn]);
 
-  // Now marker
-  const nowMarker = (() => {
-    const now = new Date();
-    const first = new Date(days[0]); first.setHours(0,0,0,0);
-    const last  = new Date(days[days.length - 1]); last.setHours(23,59,59,999);
-    if (now < first || now > last) return null;
-
-    const minute = now.getHours() * 60 + now.getMinutes();
-    return {
-      dayIndex: mode === 'day' ? 0 : now.getDay(),
-      minute,
-    };
-  })();
 
   // ---------- Mobile: stacked days ----------
   const StackedDays = (
@@ -780,20 +751,6 @@ export default function WeekGrid({
                   </div>
                 ))}
               </div>
-
-              {/* now line */}
-              {nowMarker &&
-                ((mode === 'day' && i === 0) || (mode === 'week' && nowMarker.dayIndex === i)) &&
-                nowMarker.minute >= dayStartHour * 60 &&
-                nowMarker.minute <= dayEndHour * 60 && (
-                  <div
-                    className="pointer-events-none absolute inset-x-0"
-                    style={{ top: (nowMarker.minute - dayStartHour * 60) * MINUTE_PX }}
-                  >
-                    <div className="absolute left-2 top-1/2 -translate-y-1/2 h-2.5 w-2.5 rounded-full border border-zinc-900 bg-rose-400" />
-                    <div className="h-px w-full bg-rose-400/80" />
-                  </div>
-                )}
             </div>
           </section>
         );
@@ -939,7 +896,6 @@ export default function WeekGrid({
             dayHeight={dayHeight}
             dayStartHour={dayStartHour}
             dayEndHour={dayEndHour}
-            nowMarker={nowMarker}
             dayIndex={i}
             mode={mode}
             onMouseDown={(e) => handleDayMouseDown(d, e)}
@@ -960,7 +916,6 @@ export default function WeekGrid({
             dayHeight={dayHeight}
             dayStartHour={dayStartHour}
             dayEndHour={dayEndHour}
-            nowMarker={nowMarker}
             dayIndex={i}
             mode={mode}
             onMouseDown={(e) => handleDayMouseDown(d, e)}
@@ -981,7 +936,6 @@ export default function WeekGrid({
             dayHeight={dayHeight}
             dayStartHour={dayStartHour}
             dayEndHour={dayEndHour}
-            nowMarker={nowMarker}
             dayIndex={i}
             mode={mode}
             onMouseDown={(e) => handleDayMouseDown(d, e)}
