@@ -6,6 +6,7 @@ import WeekGrid from '@/components/calendar/WeekGrid';
 import MonthGrid from '@/components/calendar/MonthGrid';
 import YearGrid from '@/components/calendar/YearGrid';
 import EventModal, { type EventDraft } from '@/components/calendar/EventModal';
+import QuickAddModal from '@/components/calendar/QuickAddModal';
 import { startOfWeek, addDays, addMonths, startOfMonth } from '@/lib/time';
 
 type Mode = 'day' | 'week' | 'month' | 'year';
@@ -25,6 +26,10 @@ export default function CalendarPage() {
   const [modalMode, setModalMode] = useState<'create' | 'edit'>('create');
   const [draft, setDraft] = useState<EventDraft | null>(null);
   const [primaryCalendarId, setPrimaryCalendarId] = useState<string>('');
+
+  // Quick Add modal state
+  const [quickAddOpen, setQuickAddOpen] = useState(false);
+  const [quickAddDate, setQuickAddDate] = useState<Date | null>(null);
 
   const weekStart = useMemo(() => startOfWeek(cursor, 0), [cursor]);
 
@@ -233,6 +238,15 @@ export default function CalendarPage() {
     setTimeout(() => refetchEvents(), 100);
   }, [refetchEvents]);
 
+  const handleDayClick = useCallback((date: Date) => {
+    if (!primaryCalendarId) {
+      alert('Please set up your calendar first. Sign in to create a profile and calendar.');
+      return;
+    }
+    setQuickAddDate(date);
+    setQuickAddOpen(true);
+  }, [primaryCalendarId]);
+
   async function handleGoogleSync() {
     setSyncing(true);
     try {
@@ -378,6 +392,7 @@ export default function CalendarPage() {
           cursor={startOfMonth(cursor)}
           events={events}
           onEditEvent={openEdit}
+          onDayClick={handleDayClick}
           primaryCalendarId={primaryCalendarId}
         />
       )}
@@ -386,6 +401,7 @@ export default function CalendarPage() {
           cursor={cursor}
           events={events}
           onEditEvent={openEdit}
+          onDayClick={handleDayClick}
           primaryCalendarId={primaryCalendarId}
         />
       )}
@@ -429,6 +445,20 @@ export default function CalendarPage() {
           onClose={closeModal}
           defaults={draft}
           mode={modalMode}
+        />
+      )}
+
+      {/* Quick Add Modal */}
+      {quickAddDate && (
+        <QuickAddModal
+          open={quickAddOpen}
+          onClose={() => setQuickAddOpen(false)}
+          selectedDate={quickAddDate}
+          primaryCalendarId={primaryCalendarId}
+          onSaved={() => {
+            setQuickAddOpen(false);
+            refetchEvents();
+          }}
         />
       )}
     </main>

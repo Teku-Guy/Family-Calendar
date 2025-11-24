@@ -23,6 +23,7 @@ type Props = {
   cursor: Date;
   events: Event[];
   onEditEvent?: (id: string, draft: EventDraft) => void;
+  onDayClick?: (date: Date) => void;
   primaryCalendarId?: string;
 };
 
@@ -30,6 +31,7 @@ export default function YearGrid({
   cursor,
   events,
   onEditEvent,
+  onDayClick,
   primaryCalendarId,
 }: Props) {
   const months = Array.from({ length: 12 }, (_, i) =>
@@ -47,6 +49,7 @@ export default function YearGrid({
             cursor={m}
             events={events}
             onEditEvent={onEditEvent}
+            onDayClick={onDayClick}
             primaryCalendarId={primaryCalendarId}
             maxEventsPerDay={2}
           />

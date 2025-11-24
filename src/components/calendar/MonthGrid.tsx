@@ -24,6 +24,7 @@ type Props = {
   cursor: Date;
   events: Event[];
   onEditEvent?: (id: string, draft: EventDraft) => void;
+  onDayClick?: (date: Date) => void;
   primaryCalendarId?: string;
   maxEventsPerDay?: number;
 };
@@ -32,10 +33,12 @@ export default function MonthGrid({
   cursor,
   events,
   onEditEvent,
+  onDayClick,
   primaryCalendarId,
   maxEventsPerDay = 3,
 }: Props) {
   const [expandedDay, setExpandedDay] = useState<Date | null>(null);
+  const [hoveredDay, setHoveredDay] = useState<Date | null>(null);
 
   const firstOfMonth = startOfMonth(cursor);
   const firstGrid = startOfWeek(firstOfMonth, 0); // grid starts on Sunday
@@ -158,12 +161,35 @@ export default function MonthGrid({
             const visibleEvents = dayEvents.slice(0, maxEventsPerDay);
             const hiddenCount = dayEvents.length - maxEventsPerDay;
 
+            const isHovered = hoveredDay?.toDateString() === d.toDateString();
+
             return (
               <div
                 key={i}
-                className={`min-h-[96px] border-l border-t border-white/5 p-2 ${
+                className={`min-h-[96px] border-l border-t border-white/5 p-2 cursor-pointer transition-colors ${
                   inMonth ? '' : 'opacity-50'
+                } ${
+                  isHovered
+                    ? 'bg-white/10 ring-2 ring-white/20 ring-inset'
+                    : 'hover:bg-white/5'
                 }`}
+                onMouseEnter={() => setHoveredDay(d)}
+                onMouseLeave={() => setHoveredDay(null)}
+                onClick={(e) => {
+                  // Only trigger if clicking empty space (not event button)
+                  if (e.target === e.currentTarget || !(e.target as HTMLElement).closest('button')) {
+                    onDayClick?.(d);
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    onDayClick?.(d);
+                  }
+                }}
+                role="button"
+                tabIndex={onDayClick ? 0 : undefined}
+                aria-label={`${d.toLocaleDateString()}, ${dayEvents.length} events`}
               >
                 <div className="text-xs mb-1">{dayNum}</div>
                 <div className="space-y-1">
