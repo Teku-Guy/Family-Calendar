@@ -43,10 +43,162 @@
  */
 'use client';
 
-import React, { useMemo, useState, useCallback } from 'react';
+import React, { useMemo, useState, useCallback, memo } from 'react';
 import EventCard from '@/components/ui/EventCard';
 import EventPopover from '@/components/ui/EventPopover';
 import { startOfWeek, startOfDay, addDays } from '@/lib/time';
+import WorkingHoursOverlay from '@/components/calendar/WorkingHoursOverlay';
+import CurrentTimeIndicator from '@/components/calendar/CurrentTimeIndicator';
+import { useTimeGrid } from '@/hooks/useTimeGrid';
+
+// Segment type for layout calculations
+type Segment = {
+  id: string | number;
+  title: string;
+  where?: string;
+  color?: string;
+  _s: number;
+  _e: number;
+  col: number;
+  styleLeft: string;
+  styleWidth: string;
+  top: number;
+  height: number;
+  _segId: string;
+  z: number;
+};
+
+// Memoized DayColumn component to reduce re-renders
+const DayColumn = memo(function DayColumn({
+  day,
+  items,
+  isToday,
+  dayHeight,
+  dayStartHour,
+  dayEndHour,
+  nowMarker,
+  dayIndex,
+  mode,
+  onMouseDown,
+  onEventClick,
+  workingHoursStart,
+  workingHoursEnd,
+  currentTime,
+  className = '',
+}: {
+  day: Date;
+  items: Segment[];
+  isToday: boolean;
+  dayHeight: number;
+  dayStartHour: number;
+  dayEndHour: number;
+  nowMarker: { dayIndex: number; minute: number } | null;
+  dayIndex: number;
+  mode: 'day' | 'week';
+  onMouseDown: (e: React.MouseEvent<HTMLDivElement>) => void;
+  onEventClick: (ev: Segment) => void;
+  workingHoursStart: number;
+  workingHoursEnd: number;
+  currentTime: Date;
+  className?: string;
+}) {
+  const MINUTE_PX = 1;
+
+  return (
+    <div
+      className={`relative border-l border-white/10 cursor-crosshair ${className}`}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget || (e.target as HTMLElement).closest('.hour-grid')) {
+          onMouseDown(e);
+        }
+      }}
+    >
+      {/* hour lines */}
+      <div className="pointer-events-none absolute inset-0 hour-grid" style={{ height: dayHeight }}>
+        {Array.from({ length: (dayEndHour - dayStartHour) + 1 }).map((_, idx) => {
+          const isThirdHour = idx % 3 === 0;
+          return (
+            <div
+              key={idx}
+              className="absolute left-0 right-0"
+              style={{ top: idx * 60 * MINUTE_PX }}
+            >
+              <div className={`h-px ${isThirdHour ? 'bg-white/20' : 'bg-white/10'}`} />
+            </div>
+          );
+        })}
+      </div>
+
+      {isToday && <div className="absolute inset-0 bg-sky-400/5" aria-hidden />}
+
+      {/* Working hours overlay */}
+      <WorkingHoursOverlay
+        workingStart={workingHoursStart}
+        workingEnd={workingHoursEnd}
+        dayStartHour={dayStartHour}
+        dayEndHour={dayEndHour}
+        slotHeight={60}
+      />
+
+      {/* Current time indicator (only show if this is today's column) */}
+      {((mode === 'day' && dayIndex === 0 && isToday) || (mode === 'week' && isToday)) && (
+        <CurrentTimeIndicator
+          currentTime={currentTime}
+          startHour={dayStartHour}
+          endHour={dayEndHour}
+          slotHeight={60}
+        />
+      )}
+
+      {/* events */}
+      <div className="relative" style={{ height: dayHeight }}>
+        {items.map((ev) => (
+          <div
+            key={ev._segId ?? ev.id}
+            className="absolute px-0.5 md:px-1 cursor-pointer"
+            role="button"
+            tabIndex={0}
+            aria-label={`${ev.title}, ${ev.where || ''}`}
+            style={{ top: ev.top, height: ev.height, left: ev.styleLeft, width: ev.styleWidth, zIndex: ev.z ?? 1 }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onEventClick(ev);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onEventClick(ev);
+              }
+            }}
+          >
+            <EventCard
+              title={ev.title}
+              where={ev.where}
+              color={ev.color}
+              height={ev.height}
+              startTime={new Date(ev._s).toISOString()}
+              endTime={new Date(ev._e).toISOString()}
+            />
+          </div>
+        ))}
+      </div>
+
+      {/* now line */}
+      {nowMarker &&
+        ((mode === 'day' && dayIndex === 0) || (mode === 'week' && nowMarker.dayIndex === dayIndex)) &&
+        nowMarker.minute >= dayStartHour * 60 &&
+        nowMarker.minute <= dayEndHour * 60 && (
+          <div
+            className="pointer-events-none absolute inset-x-0 z-10"
+            style={{ top: (nowMarker.minute - dayStartHour * 60) * MINUTE_PX }}
+          >
+            <div className="absolute left-2 top-1/2 -translate-y-1/2 h-2.5 w-2.5 rounded-full border border-zinc-900 bg-rose-400" />
+            <div className="h-px w-full bg-rose-400/80" />
+          </div>
+        )}
+    </div>
+  );
+});
 
 type CalendarEvent = {
   id: string | number;
@@ -55,7 +207,66 @@ type CalendarEvent = {
   end: string;   // ISO
   where?: string;
   color?: string;
+  all_day?: boolean;
 };
+
+// Memoized AllDayEventBanner component for displaying all-day events
+const AllDayEventBanner = memo(function AllDayEventBanner({
+  event,
+  onClick,
+}: {
+  event: CalendarEvent;
+  onClick: () => void;
+}) {
+  // Determine color class based on event color
+  const colorMap: Record<string, string> = {
+    rose: 'bg-rose-500/20 border-rose-500/40 text-rose-200',
+    pink: 'bg-pink-500/20 border-pink-500/40 text-pink-200',
+    fuchsia: 'bg-fuchsia-500/20 border-fuchsia-500/40 text-fuchsia-200',
+    purple: 'bg-purple-500/20 border-purple-500/40 text-purple-200',
+    violet: 'bg-violet-500/20 border-violet-500/40 text-violet-200',
+    indigo: 'bg-indigo-500/20 border-indigo-500/40 text-indigo-200',
+    blue: 'bg-blue-500/20 border-blue-500/40 text-blue-200',
+    sky: 'bg-sky-500/20 border-sky-500/40 text-sky-200',
+    cyan: 'bg-cyan-500/20 border-cyan-500/40 text-cyan-200',
+    teal: 'bg-teal-500/20 border-teal-500/40 text-teal-200',
+    emerald: 'bg-emerald-500/20 border-emerald-500/40 text-emerald-200',
+    green: 'bg-green-500/20 border-green-500/40 text-green-200',
+    lime: 'bg-lime-500/20 border-lime-500/40 text-lime-200',
+    yellow: 'bg-yellow-500/20 border-yellow-500/40 text-yellow-200',
+    amber: 'bg-amber-500/20 border-amber-500/40 text-amber-200',
+    orange: 'bg-orange-500/20 border-orange-500/40 text-orange-200',
+    red: 'bg-red-500/20 border-red-500/40 text-red-200',
+  };
+
+  const colorClass = event.color && colorMap[event.color]
+    ? colorMap[event.color]
+    : 'bg-white/10 border-white/20 text-white/90';
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      aria-label={`All day event: ${event.title}${event.where ? `, ${event.where}` : ''}`}
+      className={`flex items-center gap-1.5 rounded border px-2 py-1 text-xs cursor-pointer hover:brightness-110 transition-all truncate ${colorClass}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onClick();
+        }
+      }}
+    >
+      <span className="truncate font-medium">{event.title}</span>
+      {event.where && (
+        <span className="truncate opacity-70 hidden sm:inline">- {event.where}</span>
+      )}
+    </div>
+  );
+});
 
 /**
  * Callback when user drags to create a new event
@@ -106,6 +317,9 @@ export default function WeekGrid({
   onCreateDraft,
   onEditEvent,
 }: Props) {
+  // Enhanced Time Grid hook for working hours overlay and current time
+  const { workingHours, currentTime } = useTimeGrid();
+
   // Popover state for event details
   const [popover, setPopover] = useState<{
     anchor: DOMRect;
@@ -123,6 +337,37 @@ export default function WeekGrid({
   );
 
   const dayHeight = (dayEndHour - dayStartHour) * 60 * MINUTE_PX;
+
+  // Filter events into all-day and timed events
+  const { allDayEvents, timedEvents } = useMemo(() => {
+    const allDay: CalendarEvent[] = [];
+    const timed: CalendarEvent[] = [];
+
+    events.forEach(ev => {
+      if (ev.all_day) {
+        allDay.push(ev);
+      } else {
+        timed.push(ev);
+      }
+    });
+
+    return { allDayEvents: allDay, timedEvents: timed };
+  }, [events]);
+
+  // Get all-day events for a specific day
+  const getAllDayEventsForDay = useCallback((day: Date): CalendarEvent[] => {
+    const dayStart = new Date(day);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(day);
+    dayEnd.setHours(23, 59, 59, 999);
+
+    return allDayEvents.filter(ev => {
+      const evStart = new Date(ev.start);
+      const evEnd = new Date(ev.end);
+      // Event overlaps with this day
+      return evStart <= dayEnd && evEnd >= dayStart;
+    });
+  }, [allDayEvents]);
 
   // Close popover callback
   const closePopover = useCallback(() => {
@@ -203,18 +448,38 @@ export default function WeekGrid({
     [onEditEvent, primaryCalendarId, toLocalInputFormat]
   );
 
+  /**
+   * Handles click on an all-day event to open edit modal
+   */
+  const handleAllDayEventClick = useCallback(
+    (ev: CalendarEvent) => {
+      if (!onEditEvent || !primaryCalendarId) return;
+
+      onEditEvent(String(ev.id), {
+        id: String(ev.id),
+        calendar_id: primaryCalendarId,
+        title: ev.title,
+        location: ev.where,
+        color: ev.color,
+        starts_at: toLocalInputFormat(new Date(ev.start)),
+        ends_at: toLocalInputFormat(new Date(ev.end)),
+      });
+    },
+    [onEditEvent, primaryCalendarId, toLocalInputFormat]
+  );
+
   // ---- Segment-based overlap layout (Google Calendar–style) ---------------
   // Split each day into vertical segments at event boundaries, then assign
   // consistent column positions to all overlapping events within each group.
-  // Memoized for performance
-  const layoutDay = useCallback((day: Date) => {
+  // This function is called for each day, results are memoized via useMemo below
+  const layoutDayFn = useCallback((day: Date): Segment[] => {
     const dayStart = new Date(day);
     dayStart.setHours(dayStartHour, 0, 0, 0);
     const dayEnd = new Date(day);
     dayEnd.setHours(dayEndHour, 0, 0, 0);
 
-    // Filter and clamp events to the visible day window
-    const dayEvents = events
+    // Filter and clamp events to the visible day window (only timed events, not all-day)
+    const dayEvents = timedEvents
       .map((ev) => {
         const s = new Date(ev.start);
         const e = new Date(ev.end);
@@ -376,7 +641,12 @@ export default function WeekGrid({
     });
 
     return merged;
-  }, [events, dayStartHour, dayEndHour]);
+  }, [timedEvents, dayStartHour, dayEndHour]);
+
+  // Memoize layout results for all days to prevent recalculation
+  const dayLayouts = useMemo(() => {
+    return days.map(day => layoutDayFn(day));
+  }, [days, layoutDayFn]);
 
   // Now marker
   const nowMarker = (() => {
@@ -397,7 +667,8 @@ export default function WeekGrid({
     <div className="space-y-5">
       {days.map((d, i) => {
         const isToday = new Date().toDateString() === d.toDateString();
-        const items = layoutDay(d);
+        const items = dayLayouts[i];
+        const dayAllDayEvents = getAllDayEventsForDay(d);
         return (
           <section key={i} className="overflow-hidden rounded-xl border border-white/10 bg-white/5">
             <header className="sticky top-0 z-20 flex items-center justify-between gap-2 border-b border-white/10 bg-white/5 backdrop-blur-sm px-3 py-2">
@@ -408,6 +679,24 @@ export default function WeekGrid({
                 <span className="rounded bg-sky-400/15 px-2 py-0.5 text-xs text-sky-300">Today</span>
               )}
             </header>
+
+            {/* All-day events section */}
+            {dayAllDayEvents.length > 0 && (
+              <div className="border-b border-white/10 bg-white/3 px-3 py-2">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className="text-[10px] uppercase tracking-wide opacity-60">All day</span>
+                </div>
+                <div className="flex flex-col gap-1">
+                  {dayAllDayEvents.map((ev) => (
+                    <AllDayEventBanner
+                      key={ev.id}
+                      event={ev}
+                      onClick={() => handleAllDayEventClick(ev)}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div
               className="relative cursor-crosshair"
@@ -439,6 +728,25 @@ export default function WeekGrid({
 
               {/* today tint */}
               {isToday && <div className="pointer-events-none absolute inset-0 bg-sky-400/5" />}
+
+              {/* Working hours overlay */}
+              <WorkingHoursOverlay
+                workingStart={workingHours.start}
+                workingEnd={workingHours.end}
+                dayStartHour={dayStartHour}
+                dayEndHour={dayEndHour}
+                slotHeight={60}
+              />
+
+              {/* Current time indicator */}
+              {isToday && (
+                <CurrentTimeIndicator
+                  currentTime={currentTime}
+                  startHour={dayStartHour}
+                  endHour={dayEndHour}
+                  slotHeight={60}
+                />
+              )}
 
               {/* events with interactions */}
               <div className="relative h-full w-full">
@@ -540,6 +848,67 @@ export default function WeekGrid({
         })}
       </div>
 
+      {/* All-day events section - desktop */}
+      {allDayEvents.length > 0 && (
+        <div className="grid grid-cols-[minmax(60px,90px)_repeat(2,1fr)] md:grid-cols-[minmax(70px,100px)_repeat(4,1fr)] lg:grid-cols-[minmax(70px,110px)_repeat(7,1fr)] border-b border-white/10 bg-white/3">
+          {/* Label cell */}
+          <div className="sticky left-0 z-10 bg-white/3 px-2 md:px-3 py-1.5 text-[10px] uppercase tracking-wide opacity-60 flex items-center">
+            All day
+          </div>
+          {/* 2-day view (base breakpoint) */}
+          {days.slice(0, 2).map((d, i) => {
+            const dayAllDayEvents = getAllDayEventsForDay(d);
+            return (
+              <div key={`allday-2-${i}`} className="border-l border-white/10 px-1 py-1.5 lg:hidden">
+                <div className="flex flex-col gap-1">
+                  {dayAllDayEvents.map((ev) => (
+                    <AllDayEventBanner
+                      key={ev.id}
+                      event={ev}
+                      onClick={() => handleAllDayEventClick(ev)}
+                    />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+          {/* 4-day view (md breakpoint) */}
+          {days.slice(0, 4).map((d, i) => {
+            const dayAllDayEvents = getAllDayEventsForDay(d);
+            return (
+              <div key={`allday-4-${i}`} className="hidden md:block lg:hidden border-l border-white/10 px-1 py-1.5">
+                <div className="flex flex-col gap-1">
+                  {dayAllDayEvents.map((ev) => (
+                    <AllDayEventBanner
+                      key={ev.id}
+                      event={ev}
+                      onClick={() => handleAllDayEventClick(ev)}
+                    />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+          {/* 7-day view (lg breakpoint) */}
+          {days.map((d, i) => {
+            const dayAllDayEvents = getAllDayEventsForDay(d);
+            return (
+              <div key={`allday-7-${i}`} className="hidden lg:block border-l border-white/10 px-1 py-1.5">
+                <div className="flex flex-col gap-1">
+                  {dayAllDayEvents.map((ev) => (
+                    <AllDayEventBanner
+                      key={ev.id}
+                      event={ev}
+                      onClick={() => handleAllDayEventClick(ev)}
+                    />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       <div className="relative grid grid-cols-[minmax(60px,90px)_repeat(2,1fr)] md:grid-cols-[minmax(70px,100px)_repeat(4,1fr)] lg:grid-cols-[minmax(70px,110px)_repeat(7,1fr)]">
         {/* time rail - sticky */}
         <div className="sticky left-0 z-10 bg-white/5">
@@ -560,246 +929,69 @@ export default function WeekGrid({
         </div>
 
         {/* day columns - show 2 on base, 4 on md, 7 on lg */}
-        {days.slice(0, 2).map((d, i) => {
-          const isToday = new Date().toDateString() === d.toDateString();
-          const items = layoutDay(d);
-          return (
-            <div
-              key={i}
-              className="relative border-l border-white/10 lg:hidden cursor-crosshair"
-              onMouseDown={(e) => {
-                if (e.target === e.currentTarget || (e.target as HTMLElement).closest('.hour-grid')) {
-                  handleDayMouseDown(d, e);
-                }
-              }}
-            >
-              {/* hour lines (top-aligned for perfect event alignment) */}
-              <div className="pointer-events-none absolute inset-0 hour-grid" style={{ height: dayHeight }}>
-                {Array.from({ length: (dayEndHour - dayStartHour) + 1 }).map((_, idx) => {
-                  const isThirdHour = idx % 3 === 0;
-                  return (
-                    <div
-                      key={idx}
-                      className="absolute left-0 right-0"
-                      style={{ top: idx * 60 * MINUTE_PX }}
-                    >
-                      <div className={`h-px ${isThirdHour ? 'bg-white/20' : 'bg-white/10'}`} />
-                    </div>
-                  );
-                })}
-              </div>
-
-              {isToday && <div className="absolute inset-0 bg-sky-400/5" aria-hidden />}
-
-              {/* events */}
-              <div className="relative" style={{ height: dayHeight }}>
-                {items.map((ev) => (
-                  <div
-                    key={ev._segId ?? ev.id}
-                    className="absolute px-0.5 md:px-1 cursor-pointer"
-                    role="button"
-                    tabIndex={0}
-                    aria-label={`${ev.title}, ${ev.where || ''}`}
-                    style={{ top: ev.top, height: ev.height, left: ev.styleLeft, width: ev.styleWidth, zIndex: ev.z ?? 1 }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleEventEditClick(ev);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        handleEventEditClick(ev);
-                      }
-                    }}
-                  >
-                    <EventCard
-                      title={ev.title}
-                      where={ev.where}
-                      color={ev.color}
-                      height={ev.height}
-                      startTime={new Date(ev._s).toISOString()}
-                      endTime={new Date(ev._e).toISOString()}
-                    />
-                  </div>
-                ))}
-              </div>
-
-              {/* now line */}
-              {nowMarker &&
-                nowMarker.dayIndex === i &&
-                nowMarker.minute >= dayStartHour * 60 &&
-                nowMarker.minute <= dayEndHour * 60 && (
-                  <div
-                    className="pointer-events-none absolute inset-x-0 z-10"
-                    style={{ top: (nowMarker.minute - dayStartHour * 60) * MINUTE_PX }}
-                  >
-                    <div className="absolute left-2 top-1/2 -translate-y-1/2 h-2.5 w-2.5 rounded-full border border-zinc-900 bg-rose-400" />
-                    <div className="h-px w-full bg-rose-400/80" />
-                  </div>
-                )}
-            </div>
-          );
-        })}
-        {days.slice(0, 4).map((d, i) => {
-          const isToday = new Date().toDateString() === d.toDateString();
-          const items = layoutDay(d);
-          return (
-            <div
-              key={i}
-              className="relative border-l border-white/10 hidden md:block lg:hidden cursor-crosshair"
-              onMouseDown={(e) => {
-                if (e.target === e.currentTarget || (e.target as HTMLElement).closest('.hour-grid')) {
-                  handleDayMouseDown(d, e);
-                }
-              }}
-            >
-              {/* hour lines (top-aligned for perfect event alignment) */}
-              <div className="pointer-events-none absolute inset-0 hour-grid" style={{ height: dayHeight }}>
-                {Array.from({ length: (dayEndHour - dayStartHour) + 1 }).map((_, idx) => {
-                  const isThirdHour = idx % 3 === 0;
-                  return (
-                    <div
-                      key={idx}
-                      className="absolute left-0 right-0"
-                      style={{ top: idx * 60 * MINUTE_PX }}
-                    >
-                      <div className={`h-px ${isThirdHour ? 'bg-white/20' : 'bg-white/10'}`} />
-                    </div>
-                  );
-                })}
-              </div>
-
-              {isToday && <div className="absolute inset-0 bg-sky-400/5" aria-hidden />}
-
-              {/* events */}
-              <div className="relative" style={{ height: dayHeight }}>
-                {items.map((ev) => (
-                  <div
-                    key={ev._segId ?? ev.id}
-                    className="absolute px-0.5 md:px-1 cursor-pointer"
-                    role="button"
-                    tabIndex={0}
-                    aria-label={`${ev.title}, ${ev.where || ''}`}
-                    style={{ top: ev.top, height: ev.height, left: ev.styleLeft, width: ev.styleWidth, zIndex: ev.z ?? 1 }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleEventEditClick(ev);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        handleEventEditClick(ev);
-                      }
-                    }}
-                  >
-                    <EventCard
-                      title={ev.title}
-                      where={ev.where}
-                      color={ev.color}
-                      height={ev.height}
-                      startTime={new Date(ev._s).toISOString()}
-                      endTime={new Date(ev._e).toISOString()}
-                    />
-                  </div>
-                ))}
-              </div>
-
-              {/* now line */}
-              {nowMarker &&
-                nowMarker.dayIndex === i &&
-                nowMarker.minute >= dayStartHour * 60 &&
-                nowMarker.minute <= dayEndHour * 60 && (
-                  <div
-                    className="pointer-events-none absolute inset-x-0 z-10"
-                    style={{ top: (nowMarker.minute - dayStartHour * 60) * MINUTE_PX }}
-                  >
-                    <div className="absolute left-2 top-1/2 -translate-y-1/2 h-2.5 w-2.5 rounded-full border border-zinc-900 bg-rose-400" />
-                    <div className="h-px w-full bg-rose-400/80" />
-                  </div>
-                )}
-            </div>
-          );
-        })}
-        {days.map((d, i) => {
-          const isToday = new Date().toDateString() === d.toDateString();
-          const items = layoutDay(d);
-          return (
-            <div
-              key={i}
-              className="relative border-l border-white/10 hidden lg:block cursor-crosshair"
-              onMouseDown={(e) => {
-                if (e.target === e.currentTarget || (e.target as HTMLElement).closest('.hour-grid')) {
-                  handleDayMouseDown(d, e);
-                }
-              }}
-            >
-              {/* hour lines (top-aligned for perfect event alignment) */}
-              <div className="pointer-events-none absolute inset-0 hour-grid" style={{ height: dayHeight }}>
-                {Array.from({ length: (dayEndHour - dayStartHour) + 1 }).map((_, idx) => {
-                  const isThirdHour = idx % 3 === 0;
-                  return (
-                    <div
-                      key={idx}
-                      className="absolute left-0 right-0"
-                      style={{ top: idx * 60 * MINUTE_PX }}
-                    >
-                      <div className={`h-px ${isThirdHour ? 'bg-white/20' : 'bg-white/10'}`} />
-                    </div>
-                  );
-                })}
-              </div>
-
-              {isToday && <div className="absolute inset-0 bg-sky-400/5" aria-hidden />}
-
-              {/* events */}
-              <div className="relative" style={{ height: dayHeight }}>
-                {items.map((ev) => (
-                  <div
-                    key={ev._segId ?? ev.id}
-                    className="absolute px-1 cursor-pointer"
-                    role="button"
-                    tabIndex={0}
-                    aria-label={`${ev.title}, ${ev.where || ''}`}
-                    style={{ top: ev.top, height: ev.height, left: ev.styleLeft, width: ev.styleWidth, zIndex: ev.z ?? 1 }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleEventEditClick(ev);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        handleEventEditClick(ev);
-                      }
-                    }}
-                  >
-                    <EventCard
-                      title={ev.title}
-                      where={ev.where}
-                      color={ev.color}
-                      height={ev.height}
-                      startTime={new Date(ev._s).toISOString()}
-                      endTime={new Date(ev._e).toISOString()}
-                    />
-                  </div>
-                ))}
-              </div>
-
-              {/* now line */}
-              {nowMarker &&
-                nowMarker.dayIndex === i &&
-                nowMarker.minute >= dayStartHour * 60 &&
-                nowMarker.minute <= dayEndHour * 60 && (
-                  <div
-                    className="pointer-events-none absolute inset-x-0 z-10"
-                    style={{ top: (nowMarker.minute - dayStartHour * 60) * MINUTE_PX }}
-                  >
-                    <div className="absolute left-2 top-1/2 -translate-y-1/2 h-2.5 w-2.5 rounded-full border border-zinc-900 bg-rose-400" />
-                    <div className="h-px w-full bg-rose-400/80" />
-                  </div>
-                )}
-            </div>
-          );
-        })}
+        {/* 2-day view (base breakpoint) */}
+        {days.slice(0, 2).map((d, i) => (
+          <DayColumn
+            key={`2day-${i}`}
+            day={d}
+            items={dayLayouts[i]}
+            isToday={new Date().toDateString() === d.toDateString()}
+            dayHeight={dayHeight}
+            dayStartHour={dayStartHour}
+            dayEndHour={dayEndHour}
+            nowMarker={nowMarker}
+            dayIndex={i}
+            mode={mode}
+            onMouseDown={(e) => handleDayMouseDown(d, e)}
+            onEventClick={handleEventEditClick}
+            workingHoursStart={workingHours.start}
+            workingHoursEnd={workingHours.end}
+            currentTime={currentTime}
+            className="lg:hidden"
+          />
+        ))}
+        {/* 4-day view (md breakpoint) */}
+        {days.slice(0, 4).map((d, i) => (
+          <DayColumn
+            key={`4day-${i}`}
+            day={d}
+            items={dayLayouts[i]}
+            isToday={new Date().toDateString() === d.toDateString()}
+            dayHeight={dayHeight}
+            dayStartHour={dayStartHour}
+            dayEndHour={dayEndHour}
+            nowMarker={nowMarker}
+            dayIndex={i}
+            mode={mode}
+            onMouseDown={(e) => handleDayMouseDown(d, e)}
+            onEventClick={handleEventEditClick}
+            workingHoursStart={workingHours.start}
+            workingHoursEnd={workingHours.end}
+            currentTime={currentTime}
+            className="hidden md:block lg:hidden"
+          />
+        ))}
+        {/* 7-day view (lg breakpoint) */}
+        {days.map((d, i) => (
+          <DayColumn
+            key={`7day-${i}`}
+            day={d}
+            items={dayLayouts[i]}
+            isToday={new Date().toDateString() === d.toDateString()}
+            dayHeight={dayHeight}
+            dayStartHour={dayStartHour}
+            dayEndHour={dayEndHour}
+            nowMarker={nowMarker}
+            dayIndex={i}
+            mode={mode}
+            onMouseDown={(e) => handleDayMouseDown(d, e)}
+            onEventClick={handleEventEditClick}
+            workingHoursStart={workingHours.start}
+            workingHoursEnd={workingHours.end}
+            currentTime={currentTime}
+            className="hidden lg:block"
+          />
+        ))}
       </div>
     </div>
   );
