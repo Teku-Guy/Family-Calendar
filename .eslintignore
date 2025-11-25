@@ -1,0 +1,4 @@
+node
+*.mjs
+*.sh
+test-*.mjs
