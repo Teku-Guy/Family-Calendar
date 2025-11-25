@@ -43,12 +43,13 @@
  */
 'use client';
 
-import React, { useMemo, useState, useCallback, memo } from 'react';
+import React, { useMemo, useState, useCallback, memo, useRef } from 'react';
 import EventCard from '@/components/ui/EventCard';
 import EventPopover from '@/components/ui/EventPopover';
 import { startOfWeek, startOfDay, addDays } from '@/lib/time';
 import WorkingHoursOverlay from '@/components/calendar/WorkingHoursOverlay';
 import CurrentTimeIndicator from '@/components/calendar/CurrentTimeIndicator';
+import ScrollToTimeButtons from '@/components/calendar/ScrollToTimeButtons';
 import { useTimeGrid } from '@/hooks/useTimeGrid';
 
 // Segment type for layout calculations
@@ -295,8 +296,8 @@ type Props = {
   weekStart?: Date;
   selectedDate?: Date;        // used when mode === 'day'
   events: CalendarEvent[];
-  dayStartHour?: number;      // default 6
-  dayEndHour?: number;        // default 22
+  dayStartHour?: number;      // default 0 (12am)
+  dayEndHour?: number;        // default 23 (11pm)
   primaryCalendarId?: string; // For creating new events
   onCreateDraft?: OnCreateDraft;
   onEditEvent?: OnEditEvent;
@@ -311,14 +312,17 @@ export default function WeekGrid({
   weekStart,
   selectedDate,
   events,
-  dayStartHour = 6,
-  dayEndHour = 22,
+  dayStartHour = 0,
+  dayEndHour = 23,
   primaryCalendarId,
   onCreateDraft,
   onEditEvent,
 }: Props) {
   // Enhanced Time Grid hook for working hours overlay and current time
   const { workingHours, currentTime } = useTimeGrid();
+
+  // Ref for scroll container (used by ScrollToTimeButtons)
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   // Popover state for event details
   const [popover, setPopover] = useState<{
@@ -999,7 +1003,7 @@ export default function WeekGrid({
   // outer container — fluid height + responsive switch + horizontal scroll support
   return (
     <>
-      <div className="relative h-[calc(100vh-9rem)] overflow-auto">
+      <div ref={scrollContainerRef} className="relative h-[calc(100vh-9rem)] overflow-auto">
         {mode === 'day' ? (
           <div>{StackedDays}</div>
         ) : (
@@ -1009,6 +1013,9 @@ export default function WeekGrid({
           </>
         )}
       </div>
+
+      {/* Scroll navigation buttons (only show in day mode) */}
+      {mode === 'day' && <ScrollToTimeButtons containerRef={scrollContainerRef} hourHeight={60} />}
 
       {/* Event popover */}
       {popover && (
