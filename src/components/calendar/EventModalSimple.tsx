@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useToast } from '@/components/ui/Toaster';
+import { toISOString } from '@/lib/datetime';
 
 interface EventDefaults {
   id?: string;
@@ -54,12 +55,16 @@ export default function EventModalSimple({
     const fd = new FormData(e.currentTarget);
     const entries = Object.fromEntries(fd.entries());
 
+    // Convert datetime-local format to ISO 8601 (required by API)
+    const startsAtLocal = entries.starts_at as string;
+    const endsAtLocal = entries.ends_at as string;
+
     // Build typed object
     const obj = {
       calendar_id: entries.calendar_id as string,
       title: entries.title as string,
-      starts_at: entries.starts_at as string,
-      ends_at: entries.ends_at as string,
+      starts_at: toISOString(startsAtLocal),
+      ends_at: toISOString(endsAtLocal),
       location: entries.location as string,
       color: entries.color as string,
       all_day: fd.get('all_day') === 'on',
