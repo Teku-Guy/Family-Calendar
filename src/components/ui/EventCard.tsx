@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { memo } from 'react';
 import { fmtTime } from '@/lib/when';
 
 type Props = {
@@ -51,7 +51,7 @@ function getTextColor(bgColor: string): string {
   return luminance < 0.5 ? 'text-white/90' : 'text-black/80';
 }
 
-export default function EventCard({
+const EventCard = memo(function EventCard({
   title = '(No title)',
   where,
   color = '#6366F1',
@@ -110,4 +110,6 @@ export default function EventCard({
       <div className="sr-only">View event details</div>
     </button>
   );
-}
+});
+
+export default EventCard;
