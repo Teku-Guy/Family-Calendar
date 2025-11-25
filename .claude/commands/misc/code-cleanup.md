@@ -2,6 +2,7 @@
 description: Refactor and clean up code following best practices
 model: claude-sonnet-4-5
 ---
+# Code Cleanup
 
 Clean up and refactor the following code to improve readability, maintainability, and follow best practices.
 
