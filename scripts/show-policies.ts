@@ -26,7 +26,7 @@ async function main() {
       `${SUPABASE_URL}/rest/v1/pg_policies?tablename=eq.events&schemaname=eq.public&select=policyname,cmd,qual,with_check`,
       {
         headers: {
-          'apikey': SERVICE_ROLE_KEY,
+          'apikey': SERVICE_ROLE_KEY!,
           'Authorization': `Bearer ${SERVICE_ROLE_KEY}`,
         },
       }
@@ -44,7 +44,9 @@ async function main() {
       console.log('   5. Look for any policy where the USING clause mentions "events"\n');
 
       console.log('🔧 To fix immediately:');
-      console.log('   1. Open: https://supabase.com/dashboard/project/ibjulgjncqjvggldmkmq/sql/new');
+      // Extract project ID from SUPABASE_URL to avoid hardcoding
+      const projectId = SUPABASE_URL?.match(/https:\/\/([^.]+)\.supabase\.co/)?.[1] || '<your-project-id>';
+      console.log(`   1. Open: https://supabase.com/dashboard/project/${projectId}/sql/new`);
       console.log('   2. Copy the SQL from: fixes/stack-depth-rls-recursion/FIX_RLS_RECURSION.sql');
       console.log('   3. Paste and click Run\n');
 
