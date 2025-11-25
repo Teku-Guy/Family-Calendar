@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { useFloating, offset, flip, shift, autoUpdate } from '@floating-ui/react';
+import { useFloating, offset, flip, shift, autoUpdate, type Placement } from '@floating-ui/react';
 import EventPreviewContent from './EventPreviewContent';
 import EventQuickActions from './EventQuickActions';
 
@@ -28,9 +28,26 @@ export default function EventPreviewPopover({
 }: EventPreviewPopoverProps) {
   const popoverRef = useRef<HTMLDivElement>(null);
 
+  // Map position to valid Floating UI Placement
+  const getPlacement = (pos: string): Placement => {
+    switch (pos) {
+      case 'top':
+        return 'top';
+      case 'bottom':
+        return 'bottom';
+      case 'left':
+        return 'left';
+      case 'right':
+        return 'right';
+      case 'auto':
+      default:
+        return 'top-start'; // Default to top-start instead of invalid 'auto-start'
+    }
+  };
+
   // Floating UI positioning
   const { x, y, strategy, refs } = useFloating({
-    placement: position === 'auto' ? 'auto-start' : position,
+    placement: getPlacement(position),
     middleware: [
       offset(8), // 8px gap from anchor
       flip(), // Flip if no space

@@ -15,7 +15,7 @@ export function useEventPreview() {
     isOpen: false,
   });
 
-  const hoverTimeoutRef = useRef<NodeJS.Timeout>();
+  const hoverTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
 
   const showPreview = useCallback((event: any, anchorEl: HTMLElement) => {
     setPreviewState({

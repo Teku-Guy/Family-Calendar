@@ -1,7 +1,5 @@
 'use client';
 
-import { format } from 'date-fns';
-
 interface EventPreviewContentProps {
   event: {
     id: string | number;
@@ -25,11 +23,19 @@ export default function EventPreviewContent({ event, onTimeClick }: EventPreview
   const endDate = new Date(event.end);
 
   const formatTime = (date: Date): string => {
-    return format(date, 'h:mm a');
+    return date.toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
   };
 
   const formatDate = (date: Date): string => {
-    return format(date, 'EEEE, MMMM d');
+    return date.toLocaleDateString('en-US', {
+      weekday: 'long',
+      month: 'long',
+      day: 'numeric',
+    });
   };
 
   const isSameDay = (d1: Date, d2: Date): boolean => {
