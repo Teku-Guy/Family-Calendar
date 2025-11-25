@@ -3,12 +3,34 @@
 import { useState } from 'react';
 import { useToast } from '@/components/ui/Toaster';
 
+interface EventDefaults {
+  id?: string;
+  calendar_id: string;
+  title?: string;
+  starts_at: string;
+  ends_at: string;
+  location?: string;
+  color?: string;
+  all_day?: boolean;
+}
+
+interface SavedEvent {
+  id: string;
+  calendar_id: string;
+  title: string;
+  starts_at: string;
+  ends_at: string;
+  location?: string;
+  color?: string;
+  all_day?: boolean;
+}
+
 type Props = {
   open: boolean;
   onClose: () => void;
-  defaults: any;
+  defaults: EventDefaults;
   mode: 'create' | 'edit';
-  onSaved?: (event: any) => void;
+  onSaved?: (event: SavedEvent) => void;
   onDeleted?: (id: string) => void;
 };
 
@@ -30,10 +52,18 @@ export default function EventModalSimple({
     setBusy(true);
 
     const fd = new FormData(e.currentTarget);
-    const obj = Object.fromEntries(fd.entries()) as any;
+    const entries = Object.fromEntries(fd.entries());
 
-    // Convert checkbox to boolean
-    obj.all_day = fd.get('all_day') === 'on';
+    // Build typed object
+    const obj = {
+      calendar_id: entries.calendar_id as string,
+      title: entries.title as string,
+      starts_at: entries.starts_at as string,
+      ends_at: entries.ends_at as string,
+      location: entries.location as string,
+      color: entries.color as string,
+      all_day: fd.get('all_day') === 'on',
+    };
 
     try {
       if (mode === 'create') {
@@ -57,12 +87,15 @@ export default function EventModalSimple({
         if (!res.ok) throw new Error(j?.error || res.statusText);
 
         push({ title: 'Event updated', kind: 'success' });
-        onSaved?.({ id: defaults.id, ...obj });
+        if (defaults.id) {
+          onSaved?.({ id: defaults.id, ...obj });
+        }
       }
 
       onClose();
-    } catch (err: any) {
-      push({ title: `Save failed: ${err.message}`, kind: 'error' });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      push({ title: `Save failed: ${message}`, kind: 'error' });
     } finally {
       setBusy(false);
     }
@@ -80,10 +113,13 @@ export default function EventModalSimple({
       if (!res.ok) throw new Error(j?.error || res.statusText);
 
       push({ title: 'Event deleted', kind: 'success' });
-      onDeleted?.(defaults.id);
+      if (defaults.id) {
+        onDeleted?.(defaults.id);
+      }
       onClose();
-    } catch (err: any) {
-      push({ title: `Delete failed: ${err.message}`, kind: 'error' });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      push({ title: `Delete failed: ${message}`, kind: 'error' });
     } finally {
       setBusy(false);
     }
