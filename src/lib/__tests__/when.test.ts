@@ -8,6 +8,8 @@
  * - Minute-based calculations for calendar rendering
  */
 
+/// <reference path="./bun-test.d.ts" />
+
 import {
   toLocalInput,
   fromLocalInput,
