@@ -49,7 +49,7 @@ async function inspectPolicies() {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'apikey': SERVICE_ROLE_KEY,
+        'apikey': SERVICE_ROLE_KEY!,
         'Authorization': `Bearer ${SERVICE_ROLE_KEY}`,
       },
       body: JSON.stringify({ query }),
@@ -65,7 +65,7 @@ async function inspectPolicies() {
 
       // Query using service role directly
       const { createClient } = await import('@supabase/supabase-js');
-      const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+      const supabase = createClient(SUPABASE_URL!, SERVICE_ROLE_KEY!);
 
       const { data, error } = await supabase.rpc('exec_sql', {
         query: `
@@ -103,7 +103,7 @@ async function testServiceRole() {
   console.log('\n📋 STEP 2: Testing service role query (bypasses RLS)\n');
 
   const { createClient } = await import('@supabase/supabase-js');
-  const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+  const supabase = createClient(SUPABASE_URL!, SERVICE_ROLE_KEY!);
 
   const from = new Date('2025-10-15T00:00:00.000Z');
   const to = new Date('2025-10-16T23:59:59.999Z');
@@ -181,7 +181,7 @@ async function showPolicyDefinitions() {
   console.log('\n📋 STEP 4: Fetching actual policy definitions\n');
 
   const { createClient } = await import('@supabase/supabase-js');
-  const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+  const supabase = createClient(SUPABASE_URL!, SERVICE_ROLE_KEY!);
 
   // Query using a raw SQL approach via Supabase
   const { data, error } = await supabase

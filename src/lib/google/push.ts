@@ -231,7 +231,7 @@ export async function googlePatch(
   const result = await response.json();
 
   // Check if etag changed unexpectedly (concurrent edit detected)
-  const conflict = expectedEtag && result.etag !== expectedEtag;
+  const conflict = !!expectedEtag && result.etag !== expectedEtag;
 
   return {
     id: result.id,

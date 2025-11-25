@@ -105,7 +105,7 @@ export async function createEvent(e: {
     starts_at: data.starts_at,
     ends_at: data.ends_at,
     all_day: data.all_day,
-    color: data.calendars?.color || undefined,
+    color: (data.calendars as unknown as { color: string } | null)?.color || undefined,
   };
 }
 
